@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "notegrabber"
+version = "0.1.0"
+description = "Small baseline CLI for deterministic WAV-to-MIDI transcription fixtures"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+notegrabber = "notegrabber.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/notegrabber"]

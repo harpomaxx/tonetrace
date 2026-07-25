@@ -1,0 +1,60 @@
+"""Command-line entry point for notegrabber."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from .analyzer import analyze_wav_to_midi
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the top-level CLI parser."""
+
+    parser = argparse.ArgumentParser(prog="notegrabber", description="Baseline WAV-to-MIDI transcription CLI")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="analyze an input WAV audio file and write a MIDI file",
+        description="Analyze an input audio WAV file and write detected notes to a MIDI file.",
+    )
+    analyze_parser.add_argument("input_audio", type=Path, help="input audio WAV file")
+    analyze_parser.add_argument("--out", required=True, type=Path, help="output MIDI file path")
+    analyze_parser.set_defaults(handler=_handle_analyze)
+
+    return parser
+
+
+def _handle_analyze(args: argparse.Namespace) -> int:
+    input_audio: Path = args.input_audio
+    output_midi: Path = args.out
+
+    if not input_audio.exists():
+        print(f"notegrabber: input audio not found: {input_audio}", file=sys.stderr)
+        return 2
+    if not input_audio.is_file():
+        print(f"notegrabber: input audio is not a file: {input_audio}", file=sys.stderr)
+        return 2
+
+    try:
+        notes = analyze_wav_to_midi(input_audio, output_midi)
+    except Exception as exc:  # argparse-style CLI: report failure without a traceback.
+        print(f"notegrabber: analyze failed: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"wrote {output_midi} ({len(notes)} note{'s' if len(notes) != 1 else ''})")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the notegrabber CLI."""
+
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return int(args.handler(args))
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
