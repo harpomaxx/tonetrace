@@ -20,6 +20,31 @@ def test_gui_launcher_parser_documents_backend_without_qt() -> None:
 
 
 @pytest.mark.gui
+def test_play_start_position_rewinds_when_reference_player_is_at_end() -> None:
+    pytest.importorskip("PySide6")
+
+    from notegrabber.gui.main_window import MainWindow
+
+    assert MainWindow._play_start_position(9_950, 10_000) == 0
+    assert MainWindow._play_start_position(5_000, 10_000) == 5_000
+    assert MainWindow._play_start_position(-10, 10_000) == 0
+
+
+@pytest.mark.gui
+def test_selected_note_summary_highlights_note_name() -> None:
+    pytest.importorskip("PySide6")
+
+    from notegrabber.gui.main_window import MainWindow
+    from notegrabber.gui.state import GuiMidiNote
+
+    summary = MainWindow._note_summary(GuiMidiNote(pitch=60, start_seconds=0.0, duration_seconds=0.5, velocity=90))
+
+    assert "C4" in summary
+    assert "font-weight:900" in summary
+    assert "MIDI 60" in summary
+
+
+@pytest.mark.gui
 def test_main_window_constructs_offscreen_when_pyside6_is_installed() -> None:
     pytest.importorskip("PySide6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -30,12 +55,30 @@ def test_main_window_constructs_offscreen_when_pyside6_is_installed() -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(render_midi=False)
 
-    assert window.windowTitle() == "notegrabber"
+    assert window.windowTitle() == "ToneTrace"
     assert window.controls.backend() == "basic-pitch"
     assert window.original_player.audioOutput() is window.original_audio
     assert window.midi_player.audioOutput() is window.midi_audio
     assert not window.transport.play_both.isEnabled()
     window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_transcription_controls_explain_sliders_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.widgets.controls import AnalysisControls
+
+    app = QApplication.instance() or QApplication([])
+    controls = AnalysisControls()
+
+    assert "frame confidence" in controls.note_sensitivity.toolTip()
+    assert "attack" in controls.split_sensitivity.toolTip()
+    assert "CQT activation threshold" in controls.cqt_threshold.toolTip()
+    assert "Minimum note length" in controls.min_duration.toolTip()
     app.processEvents()
 
 
@@ -252,6 +295,6 @@ def test_main_window_delete_selected_note_updates_tuned_notes_offscreen() -> Non
     assert window.state.tuned_notes is not None
     assert [note.pitch for note in window.state.current_notes] == [64]
     assert window.selected_note_index is None
-    assert "Selected note: none" == window.selected_note_label.text()
+    assert "No note selected" == window.selected_note_label.text()
     window.close()
     app.processEvents()

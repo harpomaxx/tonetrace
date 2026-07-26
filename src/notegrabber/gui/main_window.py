@@ -11,8 +11,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
-    QFormLayout,
-    QGroupBox,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -30,6 +29,7 @@ from notegrabber.visualizer import render_midi_to_wav
 
 from .analysis_worker import AnalysisRequest, AnalysisResult, AnalysisWorker
 from .state import GuiMidiNote, ProjectState, delete_gui_note, gui_notes_to_midi, retune_notes_from_heatmap, update_gui_note
+from .theme import APP_STYLESHEET, polish_button
 from .widgets.controls import AnalysisControls
 from .widgets.piano_roll import PianoRollWidget
 from .widgets.sequence import SequenceWidget
@@ -48,7 +48,7 @@ class MainWindow(QMainWindow):
         self.analysis_worker: AnalysisWorker | None = None
         self.selected_note_index: int | None = None
 
-        self.setWindowTitle("notegrabber")
+        self.setWindowTitle("ToneTrace")
         self.resize(1280, 820)
         self.controls = AnalysisControls()
         self.controls.backend_combo.setCurrentText(initial_backend)
@@ -57,14 +57,15 @@ class MainWindow(QMainWindow):
         self.sequence = SequenceWidget()
         self.transport = TransportWidget()
         self.file_label = QLabel("No audio loaded")
-        self.selected_note_label = QLabel("Selected note: none")
+        self.selected_note_label = QLabel("No note selected")
         self.note_start_spin = self._seconds_spin()
         self.note_duration_spin = self._seconds_spin(minimum=0.001)
         self.note_pitch_spin = QSpinBox()
         self.note_pitch_spin.setRange(0, 127)
         self.note_velocity_spin = QSpinBox()
         self.note_velocity_spin.setRange(1, 127)
-        self.apply_note_button = QPushButton("Apply note edit")
+        self.apply_note_button = QPushButton("Apply")
+        polish_button(self.apply_note_button, role="primary", icon_name="export")
         self.original_audio = QAudioOutput(self)
         self.midi_audio = QAudioOutput(self)
         self.original_player = QMediaPlayer(self)
@@ -73,6 +74,9 @@ class MainWindow(QMainWindow):
         self.midi_player.setAudioOutput(self.midi_audio)
         self.original_audio.setVolume(0.85)
         self.midi_audio.setVolume(0.85)
+        self.file_label.setObjectName("fileLabel")
+        self.selected_note_label.setObjectName("selectedNoteLabel")
+        self.selected_note_label.setTextFormat(Qt.TextFormat.RichText)
         self.file_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.selected_note_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._set_note_inspector_enabled(False)
@@ -114,17 +118,42 @@ class MainWindow(QMainWindow):
         spin.setSingleStep(0.01)
         spin.setSuffix(" s")
         spin.setKeyboardTracking(False)
+        spin.setMaximumWidth(96)
         return spin
 
-    def _build_note_inspector(self) -> QGroupBox:
-        group = QGroupBox("Selected note inspector")
-        form = QFormLayout(group)
-        form.addRow("Start", self.note_start_spin)
-        form.addRow("Duration", self.note_duration_spin)
-        form.addRow("Pitch", self.note_pitch_spin)
-        form.addRow("Velocity", self.note_velocity_spin)
-        form.addRow(self.apply_note_button)
-        return group
+    def _build_note_inspector(self) -> QWidget:
+        panel = QWidget()
+        panel.setObjectName("noteInspector")
+        panel.setMaximumHeight(58)
+        self.note_pitch_spin.setMaximumWidth(68)
+        self.note_velocity_spin.setMaximumWidth(68)
+        self.apply_note_button.setMaximumWidth(86)
+
+        title = QLabel("Selected note")
+        title.setObjectName("inlineFieldLabel")
+        layout = QHBoxLayout(panel)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(8)
+        layout.addWidget(title)
+        layout.addWidget(self.selected_note_label, 1)
+        layout.addWidget(self._inline_note_field("Start", self.note_start_spin))
+        layout.addWidget(self._inline_note_field("Dur", self.note_duration_spin))
+        layout.addWidget(self._inline_note_field("Pitch", self.note_pitch_spin))
+        layout.addWidget(self._inline_note_field("Vel", self.note_velocity_spin))
+        layout.addWidget(self.apply_note_button)
+        return panel
+
+    @staticmethod
+    def _inline_note_field(label_text: str, editor: QWidget) -> QWidget:
+        field = QWidget()
+        layout = QHBoxLayout(field)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        label = QLabel(label_text)
+        label.setObjectName("inlineFieldLabel")
+        layout.addWidget(label)
+        layout.addWidget(editor)
+        return field
 
     def _build_layout(self) -> None:
         top = QWidget()
@@ -139,12 +168,13 @@ class MainWindow(QMainWindow):
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(14, 12, 14, 12)
+        right_layout.setSpacing(10)
         right_layout.addWidget(top)
-        right_layout.addWidget(QLabel("Heatmap + MIDI note map"))
+        right_layout.addWidget(self._section_label("Heatmap + MIDI note map"))
         right_layout.addWidget(piano_scroll, 4)
-        right_layout.addWidget(self.selected_note_label)
         right_layout.addWidget(self._build_note_inspector())
-        right_layout.addWidget(QLabel("Detected sequence"))
+        right_layout.addWidget(self._section_label("Detected sequence"))
         right_layout.addWidget(self.sequence, 1)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -155,6 +185,12 @@ class MainWindow(QMainWindow):
         splitter.setSizes([280, 1000])
         self.setCentralWidget(splitter)
         self.statusBar().showMessage("Ready")
+
+    @staticmethod
+    def _section_label(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("sectionTitle")
+        return label
 
     def _connect_signals(self) -> None:
         self.controls.open_requested.connect(self._open_audio_dialog)
@@ -295,7 +331,7 @@ class MainWindow(QMainWindow):
         self.controls.set_can_delete(self.selected_note_index is not None)
         self._set_note_inspector_enabled(self.selected_note_index is not None)
         if self.selected_note_index is None:
-            self.selected_note_label.setText("Selected note: none")
+            self.selected_note_label.setText("No note selected")
             return
         note = notes[self.selected_note_index]
         self._populate_note_inspector(note)
@@ -437,10 +473,13 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _note_summary(note: GuiMidiNote) -> str:
-        return (
-            f"Selected note: MIDI {note.pitch}  start {note.start_seconds:.3f}s  "
-            f"duration {note.duration_seconds:.3f}s  velocity {note.velocity}"
-        )
+        note_name = MainWindow._note_name(note.pitch)
+        return f'<span style="color:#ffd15f; font-weight:900; font-size:15px;">{note_name}</span> <span style="color:#9aa8bd;">MIDI {note.pitch}</span>'
+
+    @staticmethod
+    def _note_name(pitch: int) -> str:
+        names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+        return f"{names[pitch % 12]}{pitch // 12 - 1}"
 
     def _seek_seconds(self, seconds: float) -> None:
         milliseconds = max(0, round(seconds * 1000))
@@ -452,7 +491,8 @@ class MainWindow(QMainWindow):
     def _play_both(self) -> None:
         if self.state.audio_path is None or self.state.rendered_midi_wav is None:
             return
-        position = self.original_player.position()
+        position = self._play_start_position(self.original_player.position(), self.original_player.duration())
+        self.original_player.setPosition(position)
         self.midi_player.setPosition(position)
         self.original_player.play()
         self.midi_player.play()
@@ -461,15 +501,26 @@ class MainWindow(QMainWindow):
     def _play_original(self) -> None:
         if self.state.audio_path is None:
             return
+        self.original_player.setPosition(self._play_start_position(self.original_player.position(), self.original_player.duration()))
         self.original_player.play()
         self._set_status("Playing original audio")
 
     def _play_midi(self) -> None:
         if self.state.rendered_midi_wav is None:
             return
-        self.midi_player.setPosition(self.original_player.position())
+        position = self._play_start_position(self.original_player.position(), self.original_player.duration())
+        self.original_player.setPosition(position)
+        self.midi_player.setPosition(position)
         self.midi_player.play()
         self._set_status("Playing rendered MIDI")
+
+    @staticmethod
+    def _play_start_position(position_ms: int, duration_ms: int, *, end_tolerance_ms: int = 100) -> int:
+        """Return a sane playback start position, rewinding if the reference player is at the end."""
+
+        if duration_ms > 0 and position_ms >= max(0, duration_ms - end_tolerance_ms):
+            return 0
+        return max(0, position_ms)
 
     def _pause_playback(self) -> None:
         self.original_player.pause()
@@ -516,16 +567,4 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(text)
 
     def _apply_style(self) -> None:
-        self.setStyleSheet(
-            """
-            QMainWindow, QWidget { background: #10131d; color: #e8eefc; }
-            QGroupBox { border: 1px solid #33405a; border-radius: 10px; margin-top: 1.1em; padding: 0.65em; background: rgba(28, 34, 50, 0.72); }
-            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; color: #9bdcff; }
-            QPushButton { background: #2f6eea; color: white; border: none; border-radius: 7px; padding: 0.55em 0.8em; }
-            QPushButton:disabled { background: #303747; color: #8791a5; }
-            QPushButton:hover:!disabled { background: #4382ff; }
-            QComboBox, QTableWidget, QScrollArea { background: #161b29; border: 1px solid #33405a; border-radius: 6px; }
-            QSlider::groove:horizontal { height: 6px; background: #2b344a; border-radius: 3px; }
-            QSlider::handle:horizontal { background: #77ddff; width: 16px; margin: -5px 0; border-radius: 8px; }
-            """
-        )
+        self.setStyleSheet(APP_STYLESHEET)

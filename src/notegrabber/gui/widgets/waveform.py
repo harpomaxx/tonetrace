@@ -66,7 +66,7 @@ class WaveformWidget(QWidget):
             return
 
         step = max(1, len(self.samples) // width)
-        painter.setPen(QPen(QColor(95, 210, 255), 1))
+        painter.setPen(QPen(QColor(255, 170, 72), 1))
         for x in range(width):
             start = x * step
             end = min(len(self.samples), start + step)

@@ -330,7 +330,7 @@ NOTEGRABBER_BIN=notegrabber python3 -m pytest -q
 Current expected result with ML and GUI dependencies installed:
 
 ```text
-33 passed
+36 passed
 ```
 
 ## Guidance for a native standalone Linux app

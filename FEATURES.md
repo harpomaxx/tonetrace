@@ -1,6 +1,6 @@
-# notegrabber feature summary
+# ToneTrace / notegrabber feature summary
 
-`notegrabber` is currently a CLI, local browser-viewer, local upload server, and early native standalone GUI spike for noteGRABBER-style audio-to-MIDI workflows on Linux/free software.
+**ToneTrace** is the chosen product/app name for the native GUI. The underlying Python package and CLI are still named `notegrabber` for now. The project is currently a CLI, local browser-viewer, local upload server, and native standalone GUI spike for audio-to-MIDI workflows on Linux/free software.
 
 ## CLI analysis
 
@@ -90,12 +90,13 @@ The PySide6 GUI follows the standalone GUI plan in `docs/standalone-gui-plan/` a
 - seek both players by clicking the waveform, piano roll, or sequence rows
 - playhead overlays on waveform and piano roll
 - select/highlight note rectangles in the piano roll
-- selected-note detail label with pitch/start/duration/velocity
+- selected-note detail label with highlighted note name plus MIDI pitch/start/duration/velocity
 - inspector fields for editing selected-note start, duration, pitch, and velocity
 - piano-roll drag editing: move time/pitch and resize note boundaries from either edge
 - delete selected notes with Delete/Backspace or the delete button
 - sequence table and piano roll update after edits/deletion
 - rendered MIDI WAV preview updates after inspector edits, deletes, CQT retunes, and committed piano-roll drags when TiMidity++ is available
+- polished first-pass dark pro-DAW Qt theme with warm red/orange/yellow accents, rounded card panels, compact action pad, SVG button icons, and explanatory slider tooltips
 - export current edited/tuned notes to MIDI
 
 Install GUI dependencies with:

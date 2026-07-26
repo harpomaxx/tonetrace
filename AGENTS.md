@@ -70,7 +70,7 @@ Run tests:
 NOTEGRABBER_BIN=notegrabber python3 -m pytest -q
 ```
 
-Current expected result: **33 passed** when optional ML and PySide6 GUI dependencies are installed.
+Current expected result: **36 passed** when optional ML and PySide6 GUI dependencies are installed.
 
 Quick GUI manual check:
 

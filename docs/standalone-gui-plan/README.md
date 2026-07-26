@@ -1,6 +1,6 @@
 # Standalone Linux GUI plan
 
-This folder collects the design notes for implementing a native Linux standalone `notegrabber` application inspired by the NeuralNote layout while preserving the features already implemented in this repository.
+This folder collects the design notes for implementing **ToneTrace**, a native Linux standalone audio-to-MIDI application inspired by the NeuralNote layout while preserving the features already implemented in this repository.
 
 Reference screenshot copied from the user prompt:
 
@@ -39,7 +39,7 @@ Alternative if speed of implementation matters more than native widgets: wrap th
 
 ## Current implementation status
 
-The first native standalone implementation now lives under `src/notegrabber/gui/` and is exposed as:
+The first native standalone implementation now lives under `src/notegrabber/gui/`. The visible GUI brand/window title is **ToneTrace**; the current development launch commands are still:
 
 ```bash
 notegrabber-gui
@@ -63,6 +63,7 @@ Implemented in the GUI:
 - selected-note inspector editing for start, duration, pitch, and velocity
 - piano-roll drag editing for moving notes and resizing note boundaries
 - MIDI WAV preview re-rendering after inspector edits, deletes, CQT retunes, and committed piano-roll drags when rendering is enabled
+- polished first-pass dark pro-DAW Qt theme with warm red/orange/yellow accents, rounded cards, styled controls, compact action pad, SVG button icons, and explanatory slider tooltips
 - export current analyzed/tuned/edited/deleted note list to MIDI
 
 Still pending:
@@ -70,7 +71,7 @@ Still pending:
 - visual drag handles/cursors/ghost-preview polish
 - undo/redo for edits
 - off-main-thread/debounced MIDI preview rendering if synchronous TiMidity++ rendering becomes slow
-- polished custom knob styling
+- custom knob/dial styling for the transcription controls
 - native minimap/CSV copy parity with the browser viewer
 - richer Qt audio error/volume UI
 

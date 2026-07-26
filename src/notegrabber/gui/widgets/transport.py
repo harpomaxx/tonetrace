@@ -5,6 +5,8 @@ from __future__ import annotations
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QLabel, QPushButton, QHBoxLayout, QWidget
 
+from notegrabber.gui.theme import polish_button
+
 
 class TransportWidget(QWidget):
     """Top-bar playback controls for original/MIDI comparison."""
@@ -18,15 +20,22 @@ class TransportWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.status_label = QLabel("Ready")
-        self.play_both = QPushButton("Play both")
-        self.play_original = QPushButton("Original")
+        self.status_label.setObjectName("transportStatus")
+        self.play_both = QPushButton("Both")
+        self.play_original = QPushButton("Audio")
         self.play_midi = QPushButton("MIDI")
         self.pause = QPushButton("Pause")
         self.stop = QPushButton("Stop")
+        polish_button(self.play_both, role="primary", icon_name="both")
+        polish_button(self.play_original, role="transport", icon_name="audio")
+        polish_button(self.play_midi, role="transport", icon_name="midi")
+        polish_button(self.pause, role="transport", icon_name="pause")
+        polish_button(self.stop, role="transport", icon_name="stop")
         self.set_playback_available(original=False, midi=False)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
         layout.addWidget(self.status_label, 1)
         layout.addWidget(self.play_both)
         layout.addWidget(self.play_original)

@@ -13,7 +13,7 @@ from notegrabber.analyzer import BackendName
 def build_parser() -> argparse.ArgumentParser:
     """Build the standalone GUI launcher parser without importing Qt."""
 
-    parser = argparse.ArgumentParser(prog="notegrabber-gui", description="Launch the native notegrabber desktop GUI")
+    parser = argparse.ArgumentParser(prog="notegrabber-gui", description="Launch the native ToneTrace desktop GUI")
     parser.add_argument("audio", nargs="?", type=Path, help="optional audio file to open on startup")
     parser.add_argument(
         "--backend",

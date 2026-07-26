@@ -203,11 +203,11 @@ class PianoRollWidget(QWidget):
             if rect is None:
                 continue
             if list_index == self.selected_note_index:
-                painter.setPen(QPen(QColor(255, 240, 130), 2))
-                painter.setBrush(QColor(255, 210, 80, 150))
+                painter.setPen(QPen(QColor(255, 226, 88), 2))
+                painter.setBrush(QColor(255, 186, 52, 170))
             else:
-                painter.setPen(QPen(QColor(155, 230, 255), 1))
-                painter.setBrush(QColor(75, 115, 255, 120))
+                painter.setPen(QPen(QColor(255, 170, 66), 1))
+                painter.setBrush(QColor(210, 72, 34, 135))
             painter.drawRect(rect)
 
     def _note_rect(self, note: GuiMidiNote) -> QRectF | None:
@@ -297,4 +297,9 @@ class PianoRollWidget(QWidget):
     @staticmethod
     def _heat_color(value: float) -> QColor:
         value = max(0.0, min(1.0, value))
-        return QColor(int(35 + 220 * value), int(80 + 150 * value), int(160 + 70 * (1.0 - value)), int(45 + 200 * value))
+        return QColor(
+            int(45 + 210 * value),
+            int(18 + 150 * value),
+            int(8 + 22 * (1.0 - value)),
+            int(42 + 205 * value),
+        )
