@@ -28,6 +28,7 @@ from notegrabber.midi import write_midi
 from notegrabber.visualizer import render_midi_to_wav
 
 from .analysis_worker import AnalysisRequest, AnalysisResult, AnalysisWorker
+from .overview_worker import OverviewResult, OverviewWorker
 from .state import GuiMidiNote, ProjectState, delete_gui_note, gui_notes_to_midi, retune_notes_from_heatmap, update_gui_note
 from .theme import APP_STYLESHEET, polish_button
 from .widgets.controls import AnalysisControls
@@ -48,6 +49,7 @@ class MainWindow(QMainWindow):
         self.analysis_thread: QThread | None = None
         self.analysis_worker: AnalysisWorker | None = None
         self.waveform_runs: list[tuple[QThread, WaveformWorker]] = []
+        self.overview_runs: list[tuple[QThread, OverviewWorker]] = []
         self.selected_note_index: int | None = None
 
         self.setWindowTitle("ToneTrace")
@@ -101,6 +103,7 @@ class MainWindow(QMainWindow):
         self.state.tuned_notes = None
         self._select_note(None)
         self.waveform.set_selection(None, None)
+        self.waveform.set_pitch_overview(None)
         self.piano_roll.set_data(None, [])
         self.sequence.set_notes([])
         self.controls.set_can_export(False)
@@ -109,7 +112,8 @@ class MainWindow(QMainWindow):
         self.midi_player.setSource(QUrl())
         self.waveform.set_message("Loading waveform preview…")
         self._start_waveform_load(path)
-        self.transport.set_status("Audio loaded. Loading waveform preview in background…")
+        self._start_overview_load(path)
+        self.transport.set_status("Audio loaded. Loading waveform and overview in background…")
         self.transport.set_playback_available(original=True, midi=False)
 
     def _seconds_spin(self, *, minimum: float = 0.0) -> QDoubleSpinBox:
@@ -227,6 +231,37 @@ class MainWindow(QMainWindow):
         if path:
             self.load_audio(Path(path))
 
+    def _start_overview_load(self, path: Path) -> None:
+        thread = QThread(self)
+        worker = OverviewWorker(path)
+        self.overview_runs.append((thread, worker))
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._set_status)
+        worker.finished.connect(self._overview_finished)
+        worker.failed.connect(self._overview_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(lambda thread=thread, worker=worker: self._overview_thread_finished(thread, worker))
+        thread.start()
+
+    def _overview_finished(self, result: OverviewResult) -> None:
+        if self.state.audio_path != result.audio_path:
+            return
+        self.waveform.set_pitch_overview(result.overview)
+        self._set_status("Low-resolution pitch overview ready. Drag waveform to choose a range, then Analyze.")
+
+    def _overview_failed(self, audio_path: Path, message: str) -> None:
+        if self.state.audio_path != audio_path:
+            return
+        self.waveform.set_pitch_overview(None)
+        self._set_status(f"Pitch overview unavailable: {message}")
+
+    def _overview_thread_finished(self, thread: QThread, worker: OverviewWorker) -> None:
+        self.overview_runs = [(run_thread, run_worker) for run_thread, run_worker in self.overview_runs if run_thread is not thread]
+        worker.deleteLater()
+        thread.deleteLater()
+
     def _start_waveform_load(self, path: Path) -> None:
         thread = QThread(self)
         worker = WaveformWorker(path)
@@ -249,7 +284,8 @@ class MainWindow(QMainWindow):
             duration_seconds=result.duration_seconds,
         )
         self.controls.set_audio_duration(result.duration_seconds)
-        self._set_status("Waveform preview ready. Click Analyze.")
+        if not self._maybe_enable_default_range_for_long_audio(result.duration_seconds):
+            self._set_status("Waveform preview ready. Drag to choose a range or click Analyze.")
 
     def _waveform_failed(self, audio_path: Path, message: str) -> None:
         if self.state.audio_path != audio_path:
@@ -261,6 +297,15 @@ class MainWindow(QMainWindow):
         self.waveform_runs = [(run_thread, run_worker) for run_thread, run_worker in self.waveform_runs if run_thread is not thread]
         worker.deleteLater()
         thread.deleteLater()
+
+    def _maybe_enable_default_range_for_long_audio(self, duration_seconds: float) -> bool:
+        if duration_seconds < 180.0 or self.controls.range_enabled.isChecked():
+            return False
+        default_duration = min(30.0, duration_seconds)
+        self.controls.set_analysis_range(0.0, default_duration)
+        self.waveform.set_selection(0.0, default_duration)
+        self._set_status("Long file loaded: range analysis enabled for the first 30s. Drag waveform selection to choose another section.")
+        return True
 
     def _start_analysis(self) -> None:
         if self.state.audio_path is None:

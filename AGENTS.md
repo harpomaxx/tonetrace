@@ -46,7 +46,7 @@ The visualization command defaults to Basic Pitch and writes:
 
 The browser viewer overlays extracted MIDI rectangles on the heatmap and supports hover/click note inspection, show/hide overlay, horizontal zoom, fit-to-width, and live threshold/min-duration re-extraction from the loaded heatmap. It also includes a **Detected sequence** panel with a whole-phrase piano-roll overview/minimap, onset-grouped note/chord table, clickable rows/blocks that jump playback, and CSV copy for the currently visible/tuned sequence. The original-audio panel includes a browser file picker and waveform/signal canvas; in static viewers, selected files update playback and waveform preview only, while analysis/heatmap data still comes from the generated viewer artifacts. To select a file and generate new MIDI/heatmap/notes from the browser, use `notegrabber serve` and upload through the local web app. For very large files, the viewer compresses the heatmap canvas horizontally to stay within browser canvas limits; generated HTML/JSON can still be large.
 
-The native GUI is launched with `notegrabber-gui` or `notegrabber gui`. It implements standalone GUI milestones 0–4 in basic form: open an audio file, load waveform previews in a background worker, analyze full audio or a selected time range in a background worker, show heatmap/MIDI rectangles, show a grouped sequence table, retune CQT thresholds in memory, compare original vs rendered MIDI playback, edit/delete selected notes, and export current notes to MIDI. Clicking the waveform, piano roll, or sequence rows seeks both players and updates the playhead. Clicking a note rectangle selects/highlights it; hovered/selected notes show resize handles and cursor feedback; the inspector edits start, duration, pitch, and velocity; dragging a note body moves time/pitch; dragging note edges resizes boundaries; Delete/Backspace or the delete button removes it from the tuned note list used for export. Inspector edits, deletes, CQT retunes, and committed piano-roll drags re-render the MIDI WAV preview when rendering is enabled, so playback reflects edited notes. Editing polish such as undo/redo and keyboard nudging is still future work.
+The native GUI is launched with `notegrabber-gui` or `notegrabber gui`. It implements standalone GUI milestones 0–4 in basic form: open an audio file, load waveform previews and low-resolution full-song pitch overviews in background workers, analyze full audio or a selected time range in a background worker, show heatmap/MIDI rectangles, show a grouped sequence table, retune CQT thresholds in memory, compare original vs rendered MIDI playback, edit/delete selected notes, and export current notes to MIDI. Clicking the waveform, piano roll, or sequence rows seeks both players and updates the playhead. Clicking a note rectangle selects/highlights it; hovered/selected notes show resize handles and cursor feedback; the inspector edits start, duration, pitch, and velocity; dragging a note body moves time/pitch; dragging note edges resizes boundaries; Delete/Backspace or the delete button removes it from the tuned note list used for export. Inspector edits, deletes, CQT retunes, and committed piano-roll drags re-render the MIDI WAV preview when rendering is enabled, so playback reflects edited notes. Editing polish such as undo/redo and keyboard nudging is still future work.
 
 Tuning flags available on both `analyze` and `visualize`:
 
@@ -70,7 +70,7 @@ Run tests:
 NOTEGRABBER_BIN=notegrabber python3 -m pytest -q
 ```
 
-Current expected result: **45 passed** when optional ML and PySide6 GUI dependencies are installed.
+Current expected result: **48 passed** when optional ML and PySide6 GUI dependencies are installed.
 
 Quick GUI manual check:
 
@@ -112,7 +112,7 @@ These are working artifacts, not core source code.
 
 1. Add editing polish: keyboard nudging, undo/redo, and optional ghost previews during drag.
 2. Move edited MIDI-preview rendering off the GUI thread if TiMidity rendering becomes noticeably slow.
-3. Continue large-file UX work: progress detail, cancel analysis, large-file warnings, and optional heatmap level-of-detail caching.
+3. Continue large-file UX work: progress detail, cancel analysis, and optional overview/heatmap level-of-detail caching.
 3. Add richer GUI playback polish: volume controls and error display for Qt audio backend failures.
 4. Add export of browser-tuned notes back to MIDI or focus that effort in the native GUI.
 5. Add explicit compare mode for CQT vs Basic Pitch outputs on one page.

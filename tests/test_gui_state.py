@@ -17,6 +17,7 @@ from notegrabber.gui.state import (
     retune_notes_from_heatmap,
 )
 from notegrabber.gui.analysis_worker import _offset_heatmap_document, _offset_midi_notes
+from notegrabber.gui.overview import PitchOverview, downsample_overview_frames
 from notegrabber.midi import MidiNote, TICKS_PER_SECOND
 
 
@@ -50,6 +51,19 @@ def test_analysis_worker_offsets_range_results_to_original_timeline() -> None:
 
     assert shifted_notes[0].start_tick == 11 * TICKS_PER_SECOND
     assert [frame["time_seconds"] for frame in document["frames"]] == [10.0, 10.1]
+
+
+@pytest.mark.gui
+def test_pitch_overview_downsamples_by_max_pooling() -> None:
+    frame_times = [float(index) for index in range(6)]
+    activations = [[index / 10.0, (5 - index) / 10.0] for index in range(6)]
+
+    times, pooled = downsample_overview_frames(frame_times, activations, max_frames=3)
+    overview = PitchOverview(frame_times=times, midi_notes=[60, 61], activations=pooled, duration_seconds=6.0)
+
+    assert times == [0.0, 2.0, 4.0]
+    assert pooled == [[0.1, 0.5], [0.3, 0.3], [0.5, 0.1]]
+    assert overview.activation(0, 1) == pytest.approx(0.5)
 
 
 @pytest.mark.gui

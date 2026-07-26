@@ -81,10 +81,11 @@ The PySide6 GUI follows the standalone GUI plan in `docs/standalone-gui-plan/` a
 
 - open audio file action
 - background waveform overview loading for WAV plus MP3/FLAC/OGG fallback previews through standalone/librosa dependencies
+- background low-resolution full-song pitch overview for finding sample/chop regions before detailed analysis
 - waveform drag selection with draggable edge/body handles that sync analysis-range start/duration controls for section-based transcription
 - Basic Pitch/CQT/simple backend selector
 - NeuralNote-inspired transcription controls plus analysis range controls
-- background analysis worker with optional range-only analysis for long files
+- background analysis worker with optional range-only analysis for long files, offset back onto the full-song timeline
 - heatmap + MIDI rectangle piano-roll widget with slider/Ctrl+wheel horizontal zoom, scrolling, and pixel-aggregated drawing for large/long analyses
 - onset-grouped detected sequence table
 - original/rendered-MIDI playback controls via Qt Multimedia

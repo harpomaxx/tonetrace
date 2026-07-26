@@ -95,7 +95,7 @@ Use real Qt widgets first, custom knob styling later:
 ### Waveform strip
 
 - show selected audio filename, sample rate, duration
-- waveform overview with playhead
+- waveform overview with playhead and low-resolution full-song pitch/activity strip
 - click to seek
 - drag to select an analysis range and sync numeric range controls
 - drag selection edges/body to refine or move the range

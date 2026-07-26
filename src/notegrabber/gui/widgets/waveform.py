@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Iterable
 
 from notegrabber.analyzer import read_wav
+from notegrabber.gui.overview import PitchOverview
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
@@ -27,6 +28,7 @@ class WaveformWidget(QWidget):
         self.sample_rate = 0
         self.audio_duration_seconds = 0.0
         self.empty_message = "Open an audio file to show waveform"
+        self.pitch_overview: PitchOverview | None = None
         self.playhead_seconds = 0.0
         self.selection_start_seconds: float | None = None
         self.selection_duration_seconds: float | None = None
@@ -63,6 +65,12 @@ class WaveformWidget(QWidget):
         self.empty_message = "Open an audio file to show waveform"
         self.update()
 
+    def set_pitch_overview(self, overview: PitchOverview | None) -> None:
+        """Set or clear the low-resolution pitch overview strip."""
+
+        self.pitch_overview = overview
+        self.update()
+
     def set_message(self, message: str) -> None:
         """Clear samples and show an informational placeholder."""
 
@@ -71,6 +79,7 @@ class WaveformWidget(QWidget):
         self.audio_duration_seconds = 0.0
         self.selection_start_seconds = None
         self.selection_duration_seconds = None
+        self.pitch_overview = None
         self.empty_message = message
         self.update()
 
@@ -241,7 +250,9 @@ class WaveformWidget(QWidget):
 
         width = max(1, self.width())
         height = max(1, self.height())
-        mid_y = height / 2
+        overview_height = self._overview_height(height)
+        waveform_height = max(1, height - overview_height)
+        mid_y = waveform_height / 2
         painter.setPen(QPen(QColor(55, 65, 90), 1))
         painter.drawLine(0, int(mid_y), width, int(mid_y))
 
@@ -249,8 +260,6 @@ class WaveformWidget(QWidget):
             painter.setPen(QColor(150, 160, 180))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.empty_message)
             return
-
-        self._draw_selection(painter, width, height)
 
         step = max(1, len(self.samples) // width)
         painter.setPen(QPen(QColor(255, 170, 72), 1))
@@ -262,15 +271,50 @@ class WaveformWidget(QWidget):
             chunk = self.samples[start:end]
             low = min(chunk)
             high = max(chunk)
-            y1 = int(mid_y - high * (height * 0.45))
-            y2 = int(mid_y - low * (height * 0.45))
+            y1 = int(mid_y - high * (waveform_height * 0.45))
+            y2 = int(mid_y - low * (waveform_height * 0.45))
             painter.drawLine(x, y1, x, y2)
+
+        self._draw_pitch_overview(painter, width, height, overview_height)
+        self._draw_selection(painter, width, height)
 
         duration = self.duration_seconds()
         if duration > 0:
             playhead_x = int(max(0.0, min(1.0, self.playhead_seconds / duration)) * width)
             painter.setPen(QPen(QColor(255, 230, 120), 2))
             painter.drawLine(playhead_x, 0, playhead_x, height)
+
+    def _overview_height(self, total_height: int) -> int:
+        if self.pitch_overview is None:
+            return 0
+        return max(22, min(38, total_height // 3))
+
+    def _draw_pitch_overview(self, painter: QPainter, width: int, height: int, overview_height: int) -> None:
+        overview = self.pitch_overview
+        if overview is None or overview_height <= 0 or overview.frame_count <= 0 or overview.band_count <= 0:
+            return
+        top = height - overview_height
+        painter.fillRect(0, top, width, overview_height, QColor(9, 10, 15))
+        duration = max(self.duration_seconds(), overview.duration_seconds, 0.001)
+        band_height = max(1.0, overview_height / overview.band_count)
+        for frame_index, time_seconds in enumerate(overview.frame_times):
+            x = int(max(0.0, min(1.0, time_seconds / duration)) * width)
+            next_time = overview.frame_times[frame_index + 1] if frame_index + 1 < overview.frame_count else duration
+            next_x = int(max(0.0, min(1.0, next_time / duration)) * width)
+            column_width = max(1, next_x - x)
+            for band_index in range(overview.band_count):
+                activation = overview.activation(frame_index, band_index)
+                if activation <= 0.04:
+                    continue
+                y = top + int((overview.band_count - 1 - band_index) * band_height)
+                painter.fillRect(QRectF(x, y, column_width, max(1.0, band_height)), self._overview_color(activation))
+        painter.setPen(QPen(QColor(255, 176, 64, 110), 1))
+        painter.drawLine(0, top, width, top)
+
+    @staticmethod
+    def _overview_color(value: float) -> QColor:
+        value = max(0.0, min(1.0, value))
+        return QColor(int(55 + 200 * value), int(22 + 135 * value), int(8 + 18 * (1.0 - value)), int(38 + 170 * value))
 
     def _draw_selection(self, painter: QPainter, width: int, height: int) -> None:
         duration = self.duration_seconds()

@@ -197,6 +197,58 @@ def test_waveform_widget_falls_back_for_non_wav_audio_offscreen(monkeypatch, tmp
 
 
 @pytest.mark.gui
+def test_waveform_widget_paints_pitch_overview_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtGui import QPainter, QPixmap
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.overview import PitchOverview
+    from notegrabber.gui.widgets.waveform import WaveformWidget
+
+    app = QApplication.instance() or QApplication([])
+    widget = WaveformWidget()
+    widget.resize(320, 120)
+    widget.set_preview([0.0, 0.5, -0.5, 0.25], sample_rate=4, duration_seconds=4.0)
+    widget.set_pitch_overview(
+        PitchOverview(
+            frame_times=[0.0, 1.0, 2.0],
+            midi_notes=[60, 61, 62],
+            activations=[[0.0, 0.5, 0.9], [0.2, 0.4, 0.1], [0.8, 0.0, 0.3]],
+            duration_seconds=4.0,
+        )
+    )
+
+    pixmap = QPixmap(widget.size())
+    painter = QPainter(pixmap)
+    try:
+        widget._draw_pitch_overview(painter, widget.width(), widget.height(), widget._overview_height(widget.height()))
+    finally:
+        painter.end()
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_main_window_long_audio_defaults_to_range_analysis_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+    window.waveform.set_preview([0.0, 0.1], sample_rate=1, duration_seconds=240.0)
+
+    assert window._maybe_enable_default_range_for_long_audio(240.0)
+    assert window.controls.analysis_range() == (0.0, 30.0)
+    assert window.waveform.selection_start_seconds == pytest.approx(0.0)
+    assert window.waveform.selection_duration_seconds == pytest.approx(30.0)
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
 def test_piano_roll_widget_paints_gui_heatmap_model_offscreen() -> None:
     pytest.importorskip("PySide6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

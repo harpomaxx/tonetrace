@@ -84,7 +84,7 @@ notegrabber-gui
 notegrabber gui
 ```
 
-The GUI currently opens audio files, loads waveform previews in a background worker, runs full-file or selected-range analysis in a background worker, displays a heatmap with MIDI rectangles, shows an onset-grouped sequence table, supports CQT retuning from the loaded heatmap, compares original vs rendered MIDI playback with Qt Multimedia, seeks both players from the waveform/piano roll/sequence table, selects/highlights piano-roll notes, shows resize handles and cursor feedback for hovered/selected notes, edits selected notes through an inspector, drags/resizes notes directly in the piano roll, deletes selected notes into an edited/tuned list, re-renders the MIDI WAV preview after committed edits when rendering is enabled, and exports the current note list as MIDI. It implements milestones 0–4 in basic form. Editing polish such as undo/redo and keyboard nudging is a future milestone.
+The GUI currently opens audio files, loads waveform previews and low-resolution full-song pitch overviews in background workers, runs full-file or selected-range analysis in a background worker, displays a heatmap with MIDI rectangles, shows an onset-grouped sequence table, supports CQT retuning from the loaded heatmap, compares original vs rendered MIDI playback with Qt Multimedia, seeks both players from the waveform/piano roll/sequence table, selects/highlights piano-roll notes, shows resize handles and cursor feedback for hovered/selected notes, edits selected notes through an inspector, drags/resizes notes directly in the piano roll, deletes selected notes into an edited/tuned list, re-renders the MIDI WAV preview after committed edits when rendering is enabled, and exports the current note list as MIDI. It implements milestones 0–4 in basic form. Editing polish such as undo/redo and keyboard nudging is a future milestone.
 
 ### Serve/upload/re-analyze
 
@@ -330,7 +330,7 @@ NOTEGRABBER_BIN=notegrabber python3 -m pytest -q
 Current expected result with ML and GUI dependencies installed:
 
 ```text
-45 passed
+48 passed
 ```
 
 ## Guidance for a native standalone Linux app

@@ -51,7 +51,8 @@ Implemented in the GUI:
 - Basic Pitch default backend with CQT/simple alternatives
 - Qt file dialog/open-on-startup audio loading
 - background waveform preview loading with click-to-seek playhead, drag-to-select analysis ranges, and draggable selection handles, including non-WAV fallback previews through standalone/librosa dependencies
-- background analysis worker using existing Python backends, with optional time-range extraction for long files
+- background low-resolution full-song pitch overview for finding sample/chop regions before detailed analysis
+- background analysis worker using existing Python backends, with optional time-range extraction for long files that is offset back onto the full-song timeline
 - heatmap/piano-roll widget with MIDI note overlay, keyboard axis, slider/Ctrl+wheel horizontal zoom/scrolling, and pixel-aggregated drawing for large/long analyses
 - NeuralNote-inspired left controls for backend, note sensitivity, split sensitivity, CQT threshold, minimum duration, heatmap zoom, and analysis range
 - original audio and rendered MIDI WAV playback through Qt Multimedia

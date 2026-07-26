@@ -249,8 +249,8 @@ Manual tests:
 The project has advanced beyond the original first implementation target. Current native GUI support includes Milestones 0–4 in basic form:
 
 - `notegrabber-gui` / `notegrabber gui` launch the PySide6 app.
-- file picker or startup argument loads audio and draws waveform; dragging the waveform selects the analysis range, and selection handles refine/move it.
-- Analyze runs Basic Pitch/CQT/simple in a `QThread` worker, optionally on a selected time range for long files.
+- file picker or startup argument loads audio, draws waveform, and builds a low-resolution full-song pitch overview; dragging the waveform selects the analysis range, and selection handles refine/move it.
+- Analyze runs Basic Pitch/CQT/simple in a `QThread` worker, optionally on a selected time range for long files with results offset back to the full-song timeline.
 - heatmap and MIDI note rectangles are displayed in a custom piano-roll widget with horizontal zoom/scrolling.
 - sequence table groups notes/chords by onset.
 - Qt Multimedia compares original audio and rendered MIDI WAV.
