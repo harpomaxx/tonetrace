@@ -33,6 +33,19 @@ class MidiNoteEvent:
     track: int
 
 
+@dataclass(frozen=True)
+class MidiNoteInterval:
+    """A parsed MIDI note interval in real seconds."""
+
+    note: int
+    start_seconds: float
+    end_seconds: float
+
+    @property
+    def duration_seconds(self) -> float:
+        return self.end_seconds - self.start_seconds
+
+
 def midi_note_frequency(note: int) -> float:
     """Return the equal-tempered frequency for a MIDI note number."""
 
@@ -125,10 +138,16 @@ def write_silence_wav(path: Path, duration_seconds: float = 0.5) -> Path:
     return render_wav(path, silence_frames(duration_seconds))
 
 
-def run_notegrabber_analyze(input_wav: Path, output_mid: Path, timeout_seconds: float = 20.0) -> subprocess.CompletedProcess[str]:
-    """Run `$NOTEGRABBER_BIN analyze <input> --out <output>` and capture output."""
+def run_notegrabber_analyze(
+    input_wav: Path,
+    output_mid: Path,
+    timeout_seconds: float = 20.0,
+    extra_args: Sequence[str | Path] = (),
+) -> subprocess.CompletedProcess[str]:
+    """Run `$NOTEGRABBER_BIN analyze <input> --out <output>` with optional extra arguments."""
 
     command = [*notegrabber_command(), "analyze", str(input_wav), "--out", str(output_mid)]
+    command.extend(str(argument) for argument in extra_args)
     return subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout_seconds)
 
 
@@ -156,6 +175,35 @@ def read_note_pitches(midi_path: Path) -> list[int]:
     """Return note-on pitches in event order."""
 
     return [event.note for event in read_note_on_events(midi_path)]
+
+
+def read_note_intervals_seconds(midi_path: Path) -> list[MidiNoteInterval]:
+    """Read note intervals from a MIDI file using tempo metadata."""
+
+    try:
+        from mido import MidiFile, tick2second
+    except ModuleNotFoundError as exc:  # pragma: no cover - exercised only in incomplete test envs
+        pytest.fail("mido is required for MIDI contract tests; install requirements-dev.txt")
+        raise exc
+
+    midi = MidiFile(midi_path)
+    tempo = 500_000
+    intervals: list[MidiNoteInterval] = []
+    active: dict[int, list[float]] = {}
+    elapsed_seconds = 0.0
+
+    for message in midi.tracks[0]:
+        elapsed_seconds += tick2second(message.time, midi.ticks_per_beat, tempo)
+        if message.type == "set_tempo":
+            tempo = message.tempo
+        elif message.type == "note_on" and message.velocity > 0:
+            active.setdefault(message.note, []).append(elapsed_seconds)
+        elif message.type == "note_off" or (message.type == "note_on" and message.velocity == 0):
+            starts = active.get(message.note, [])
+            if starts:
+                intervals.append(MidiNoteInterval(note=message.note, start_seconds=starts.pop(0), end_seconds=elapsed_seconds))
+
+    return sorted(intervals, key=lambda interval: (interval.start_seconds, interval.note))
 
 
 def unique_pitches(midi_path: Path) -> set[int]:

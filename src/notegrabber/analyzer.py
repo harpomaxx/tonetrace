@@ -1,22 +1,28 @@
-"""Small deterministic DSP baseline for converting simple WAV tones to MIDI notes."""
+"""Small deterministic DSP baselines for converting simple WAV tones to MIDI notes."""
 
 from __future__ import annotations
 
+import json
 import math
 import struct
 import wave
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from .midi import MidiNote, TICKS_PER_SECOND, write_midi
 
 MIN_MIDI_NOTE = 21
 MAX_MIDI_NOTE = 108
+MIDI_NOTES = tuple(range(MIN_MIDI_NOTE, MAX_MIDI_NOTE + 1))
 WINDOW_SIZE = 1024
 HOP_SIZE = 512
 SILENCE_RMS_FLOOR = 0.01
 ACTIVITY_RATIO = 0.20
 PITCH_RATIO = 0.35
+CQT_THRESHOLD = 0.45
+MIN_NOTE_FRAMES = 1
+BackendName = Literal["simple", "cqt"]
 
 
 @dataclass(frozen=True)
@@ -74,10 +80,36 @@ def read_wav(path: Path) -> AudioData:
     return AudioData(samples=samples, sample_rate=sample_rate)
 
 
-def analyze_wav_to_midi(input_wav: Path, output_midi: Path) -> list[MidiNote]:
-    """Analyze a simple WAV fixture and write detected notes to a MIDI file."""
+def analyze_wav_to_midi(
+    input_wav: Path,
+    output_midi: Path,
+    heatmap_path: Path | None = None,
+    backend: BackendName = "simple",
+) -> list[MidiNote]:
+    """Analyze a WAV file and write detected notes to a MIDI file."""
 
-    audio = read_wav(input_wav)
+    if backend == "simple":
+        audio = read_wav(input_wav)
+        notes = analyze_simple(audio)
+        write_midi(output_midi, notes)
+        if heatmap_path is not None:
+            write_heatmap(heatmap_path, build_simple_heatmap(audio))
+        return notes
+
+    if backend == "cqt":
+        heatmap = build_cqt_heatmap(input_wav)
+        notes = notes_from_heatmap(heatmap)
+        write_midi(output_midi, notes)
+        if heatmap_path is not None:
+            write_heatmap(heatmap_path, heatmap)
+        return notes
+
+    raise ValueError(f"unsupported backend: {backend}")
+
+
+def analyze_simple(audio: AudioData) -> list[MidiNote]:
+    """Analyze deterministic simple-tone fixtures with direct pitch correlation."""
+
     segments = find_active_segments(audio.samples)
 
     notes: list[MidiNote] = []
@@ -88,9 +120,227 @@ def analyze_wav_to_midi(input_wav: Path, output_midi: Path) -> list[MidiNote]:
         duration_ticks = max(1, round((segment.end - segment.start) * TICKS_PER_SECOND / audio.sample_rate))
         for pitch in pitches:
             notes.append(MidiNote(pitch=pitch, start_tick=start_tick, duration_ticks=duration_ticks))
-
-    write_midi(output_midi, notes)
     return notes
+
+
+def write_heatmap(path: Path, heatmap: dict[str, object]) -> None:
+    """Write per-frame MIDI-note salience values as deterministic JSON."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(heatmap, indent=2) + "\n", encoding="utf-8")
+
+
+def build_heatmap(audio: AudioData) -> dict[str, object]:
+    """Backward-compatible alias for the simple heatmap backend."""
+
+    return build_simple_heatmap(audio)
+
+
+def build_simple_heatmap(audio: AudioData) -> dict[str, object]:
+    """Build normalized per-analysis activations using direct sine correlation."""
+
+    midi_notes = list(MIDI_NOTES)
+    raw_frames: list[tuple[float, list[float]]] = []
+    max_magnitude = 0.0
+    max_rms = 0.0
+
+    for start, end in _analysis_windows(audio.samples):
+        frame_samples = audio.samples[start:end]
+        rms = _rms(frame_samples)
+        max_rms = max(max_rms, rms)
+        magnitudes = [_tone_magnitude(frame_samples, audio.sample_rate, midi_note_frequency(note)) for note in midi_notes]
+        max_magnitude = max(max_magnitude, max(magnitudes, default=0.0))
+        raw_frames.append((start / audio.sample_rate, magnitudes))
+
+    normalizer = max_magnitude if max_rms >= SILENCE_RMS_FLOOR else 0.0
+    frames = _normalize_frames(raw_frames, midi_notes, normalizer)
+
+    return _heatmap_document(
+        backend="simple",
+        sample_rate=audio.sample_rate,
+        hop_size=HOP_SIZE,
+        window_size=WINDOW_SIZE,
+        midi_notes=midi_notes,
+        frames=frames,
+    )
+
+
+def build_cqt_heatmap(input_wav: Path) -> dict[str, object]:
+    """Build a Constant-Q Transform salience heatmap aligned to piano MIDI notes."""
+
+    try:
+        import librosa
+        import numpy as np
+    except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional environment
+        raise RuntimeError(
+            "CQT backend requires optional dependencies; install with `python3 -m pip install -e .[cqt]` "
+            "or `python3 -m pip install -r requirements-dev.txt`"
+        ) from exc
+
+    audio, sample_rate = librosa.load(input_wav, sr=None, mono=True)
+    if sample_rate <= 0:
+        raise ValueError("audio file has an invalid sample rate")
+
+    midi_notes = list(MIDI_NOTES)
+    cqt = librosa.cqt(
+        audio,
+        sr=sample_rate,
+        hop_length=HOP_SIZE,
+        fmin=librosa.midi_to_hz(MIN_MIDI_NOTE),
+        n_bins=len(midi_notes),
+        bins_per_octave=12,
+    )
+    magnitudes = np.abs(cqt)
+    max_magnitude = float(magnitudes.max()) if magnitudes.size else 0.0
+
+    frames: list[dict[str, object]] = []
+    for frame_index in range(magnitudes.shape[1] if magnitudes.ndim == 2 else 0):
+        column = magnitudes[:, frame_index]
+        if max_magnitude > 0.0:
+            activations = np.clip(column / max_magnitude, 0.0, 1.0)
+            activation_list = [round(float(value), 6) for value in activations]
+        else:
+            activation_list = [0.0 for _note in midi_notes]
+        frames.append(
+            {
+                "time_seconds": frame_index * HOP_SIZE / sample_rate,
+                "activations": activation_list,
+            }
+        )
+
+    return _heatmap_document(
+        backend="cqt",
+        sample_rate=int(sample_rate),
+        hop_size=HOP_SIZE,
+        window_size=WINDOW_SIZE,
+        midi_notes=midi_notes,
+        frames=frames,
+    )
+
+
+def notes_from_heatmap(heatmap: dict[str, object], threshold: float = CQT_THRESHOLD) -> list[MidiNote]:
+    """Extract note events from a normalized heatmap by grouping active frames."""
+
+    sample_rate = int(heatmap["sample_rate"])
+    hop_size = int(heatmap["hop_size"])
+    midi_notes = [int(note) for note in heatmap["midi_notes"]]  # type: ignore[index]
+    frames = heatmap["frames"]  # type: ignore[assignment]
+
+    if not isinstance(frames, list) or not frames:
+        return []
+
+    seconds_per_tick = 1.0 / TICKS_PER_SECOND
+    hop_seconds = hop_size / sample_rate
+    notes: list[MidiNote] = []
+
+    for note_index, pitch in enumerate(midi_notes):
+        active_start: int | None = None
+        active_peak = 0.0
+        for frame_index, frame in enumerate(frames):
+            activations = frame["activations"]  # type: ignore[index]
+            activation = float(activations[note_index])
+            is_local_peak = _is_local_peak(activations, note_index)
+            is_active = activation >= threshold and is_local_peak
+            if is_active:
+                if active_start is None:
+                    active_start = frame_index
+                    active_peak = activation
+                else:
+                    active_peak = max(active_peak, activation)
+            elif active_start is not None:
+                _append_heatmap_note(notes, pitch, active_start, frame_index, hop_seconds, seconds_per_tick, active_peak)
+                active_start = None
+                active_peak = 0.0
+
+        if active_start is not None:
+            _append_heatmap_note(notes, pitch, active_start, len(frames), hop_seconds, seconds_per_tick, active_peak)
+
+    return sorted(notes, key=lambda note: (note.start_tick, note.pitch))
+
+
+def _append_heatmap_note(
+    notes: list[MidiNote],
+    pitch: int,
+    start_frame: int,
+    end_frame: int,
+    hop_seconds: float,
+    seconds_per_tick: float,
+    peak_activation: float,
+) -> None:
+    if end_frame - start_frame < MIN_NOTE_FRAMES:
+        return
+    start_tick = round(start_frame * hop_seconds / seconds_per_tick)
+    duration_ticks = max(1, round((end_frame - start_frame) * hop_seconds / seconds_per_tick))
+    velocity = max(1, min(127, round(peak_activation * 127)))
+    notes.append(MidiNote(pitch=pitch, start_tick=start_tick, duration_ticks=duration_ticks, velocity=velocity))
+
+
+def _is_local_peak(activations: object, note_index: int) -> bool:
+    values = activations  # type: ignore[assignment]
+    activation = float(values[note_index])  # type: ignore[index]
+    left = float(values[note_index - 1]) if note_index > 0 else -1.0  # type: ignore[index]
+    right = float(values[note_index + 1]) if note_index + 1 < len(values) else -1.0  # type: ignore[arg-type,index]
+    return activation >= left and activation >= right
+
+
+def _heatmap_document(
+    *,
+    backend: str,
+    sample_rate: int,
+    hop_size: int,
+    window_size: int,
+    midi_notes: list[int],
+    frames: list[dict[str, object]],
+) -> dict[str, object]:
+    return {
+        "version": 1,
+        "backend": backend,
+        "sample_rate": sample_rate,
+        "hop_size": hop_size,
+        "window_size": window_size,
+        "midi_notes": midi_notes,
+        "frames": frames,
+    }
+
+
+def _normalize_frames(
+    raw_frames: list[tuple[float, list[float]]],
+    midi_notes: list[int],
+    normalizer: float,
+) -> list[dict[str, object]]:
+    frames: list[dict[str, object]] = []
+    for time_seconds, magnitudes in raw_frames:
+        if normalizer > 0.0:
+            activations = [round(max(0.0, min(1.0, magnitude / normalizer)), 6) for magnitude in magnitudes]
+        else:
+            activations = [0.0 for _note in midi_notes]
+        frames.append(
+            {
+                "time_seconds": time_seconds,
+                "activations": activations,
+            }
+        )
+    return frames
+
+
+def _analysis_windows(samples: list[float]) -> list[tuple[int, int]]:
+    """Return deterministic analysis windows over the full sample range."""
+
+    windows: list[tuple[int, int]] = []
+    for start in range(0, len(samples), HOP_SIZE):
+        end = min(len(samples), start + WINDOW_SIZE)
+        if end <= start:
+            break
+        windows.append((start, end))
+    return windows
+
+
+def _rms(samples: list[float]) -> float:
+    """Return root-mean-square amplitude for a sample window."""
+
+    if not samples:
+        return 0.0
+    return math.sqrt(sum(sample * sample for sample in samples) / len(samples))
 
 
 def _decode_pcm_sample(chunk: bytes, sample_width: int) -> float:
@@ -164,7 +414,7 @@ def detect_pitches(samples: list[float], sample_rate: int) -> list[int]:
     if not samples:
         return []
 
-    magnitudes = [(note, _tone_magnitude(samples, sample_rate, midi_note_frequency(note))) for note in range(MIN_MIDI_NOTE, MAX_MIDI_NOTE + 1)]
+    magnitudes = [(note, _tone_magnitude(samples, sample_rate, midi_note_frequency(note))) for note in MIDI_NOTES]
     max_magnitude = max((magnitude for _note, magnitude in magnitudes), default=0.0)
     if max_magnitude <= 0.0:
         return []

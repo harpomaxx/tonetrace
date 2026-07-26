@@ -19,6 +19,7 @@ def test_notegrabber_help_lists_analyze_command() -> None:
     combined_output = f"{result.stdout}\n{result.stderr}".lower()
     assert result.returncode == 0, f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
     assert "analyze" in combined_output
+    assert "visualize" in combined_output
 
 
 @pytest.mark.cli
@@ -31,4 +32,22 @@ def test_analyze_help_documents_input_and_output_arguments() -> None:
     combined_output = f"{result.stdout}\n{result.stderr}".lower()
     assert result.returncode == 0, f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
     assert "--out" in combined_output
+    assert "--heatmap" in combined_output
+    assert "--backend" in combined_output
+    assert "cqt" in combined_output
     assert any(term in combined_output for term in ("input", "audio", "wav"))
+
+
+@pytest.mark.cli
+@pytest.mark.tier0
+def test_visualize_help_documents_cqt_and_out_dir() -> None:
+    command = [*notegrabber_command(), "visualize", "--help"]
+
+    result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+
+    combined_output = f"{result.stdout}\n{result.stderr}".lower()
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
+    assert "--out-dir" in combined_output
+    assert "--backend" in combined_output
+    assert "cqt" in combined_output
+    assert "timidity" in combined_output.lower()

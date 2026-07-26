@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 TICKS_PER_BEAT = 480
-TICKS_PER_SECOND = 480
+TEMPO_MICROSECONDS_PER_BEAT = 500_000  # 120 BPM
+TICKS_PER_SECOND = round(TICKS_PER_BEAT * 1_000_000 / TEMPO_MICROSECONDS_PER_BEAT)
 
 
 @dataclass(frozen=True)
@@ -58,8 +59,10 @@ def write_midi(path: Path, notes: list[MidiNote]) -> None:
 
     track = bytearray()
     # 120 BPM tempo metadata keeps the file conventional for MIDI readers.
+    # TICKS_PER_SECOND must match this tempo and TICKS_PER_BEAT, otherwise
+    # rendered MIDI plays at the wrong speed.
     track.extend(_varlen(0))
-    track.extend(b"\xff\x51\x03\x07\xa1\x20")
+    track.extend(b"\xff\x51\x03" + TEMPO_MICROSECONDS_PER_BEAT.to_bytes(3, "big"))
 
     previous_tick = 0
     for absolute_tick, _order, payload in events:

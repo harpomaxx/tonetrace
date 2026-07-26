@@ -9,6 +9,11 @@ description = "Small baseline CLI for deterministic WAV-to-MIDI transcription fi
 requires-python = ">=3.10"
 dependencies = []
 
+[project.optional-dependencies]
+cqt = [
+    "librosa>=0.10",
+]
+
 [project.scripts]
 notegrabber = "notegrabber.cli:main"
 

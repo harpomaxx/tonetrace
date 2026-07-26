@@ -8,6 +8,9 @@ The executable is selected with `NOTEGRABBER_BIN`; when the variable is unset th
 
 ```sh
 $NOTEGRABBER_BIN analyze <input-audio.wav> --out <output.mid>
+$NOTEGRABBER_BIN analyze <input-audio.wav> --out <output.mid> --heatmap <output.json>
+$NOTEGRABBER_BIN analyze <input-audio.wav> --out <output.mid> --heatmap <output.json> --backend cqt
+$NOTEGRABBER_BIN visualize <input-audio.wav> --out-dir <viewer-dir>
 ```
 
 Contract expectations:
@@ -15,6 +18,9 @@ Contract expectations:
 - `notegrabber --help` exits successfully and documents the `analyze` command.
 - `notegrabber analyze --help` exits successfully and documents the input audio and `--out` MIDI output arguments.
 - Successful analysis writes a readable Standard MIDI File at the requested output path.
+- With `--heatmap`, successful analysis also writes heatmap JSON containing `midi_notes` and `frames` with per-note activations.
+- `--backend simple` is the deterministic stdlib DSP baseline; `--backend cqt` uses librosa's Constant-Q Transform for a more music-aligned heatmap and baseline MIDI extraction.
+- `visualize` writes a local `index.html`, CQT heatmap JSON, MIDI file, and, when TiMidity++ is available, a rendered MIDI WAV preview for browser playback.
 - A monophonic A4 sine wave produces MIDI note 69.
 - Two sequential sine notes produce the expected pitches in order.
 - A simple triad/chord produces the expected simultaneous pitches.
@@ -41,8 +47,10 @@ Run incrementally while building the tool:
 pytest -m tier0   # CLI shape only
 pytest -m tier1   # single A4 sine -> MIDI note 69
 pytest -m tier2   # two monophonic notes in order
-pytest -m tier3   # simple polyphonic C-major chord
-pytest -m edge    # silence and error handling
+pytest -m tier3    # simple polyphonic C-major chord
+pytest -m edge     # silence and error handling
+pytest -m heatmap  # A4 sine -> MIDI note 69 plus heatmap JSON contract
+pytest -m cqt      # optional librosa/CQT backend and visualization checks
 ```
 
 If the CLI is not installed, tests that execute the CLI are skipped with a message naming `NOTEGRABBER_BIN`. To run against a local build:

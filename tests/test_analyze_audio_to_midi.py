@@ -8,6 +8,7 @@ import pytest
 
 from tests.helpers import (
     assert_successful_analysis,
+    read_note_intervals_seconds,
     read_note_on_events,
     read_note_pitches,
     run_notegrabber_analyze,
@@ -29,6 +30,9 @@ def test_single_a4_sine_produces_midi_note_69(tmp_path: Path) -> None:
 
     assert_successful_analysis(result, output_mid)
     assert unique_pitches(output_mid) == {69}
+    intervals = read_note_intervals_seconds(output_mid)
+    assert len(intervals) == 1
+    assert intervals[0].duration_seconds == pytest.approx(0.8, abs=0.18)
 
 
 @pytest.mark.cli

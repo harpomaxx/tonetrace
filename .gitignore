@@ -1,0 +1,12 @@
+# Agent/runtime artifacts
+.pi-subagents/
+
+# Python/test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Local manual-testing artifacts
+out/
+oxi.wav
