@@ -33,6 +33,7 @@ from .theme import APP_STYLESHEET, polish_button
 from .widgets.controls import AnalysisControls
 from .widgets.piano_roll import PianoRollWidget
 from .widgets.sequence import SequenceWidget
+from .waveform_worker import WaveformResult, WaveformWorker
 from .widgets.transport import TransportWidget
 from .widgets.waveform import WaveformWidget
 
@@ -46,6 +47,7 @@ class MainWindow(QMainWindow):
         self.render_midi = render_midi
         self.analysis_thread: QThread | None = None
         self.analysis_worker: AnalysisWorker | None = None
+        self.waveform_runs: list[tuple[QThread, WaveformWorker]] = []
         self.selected_note_index: int | None = None
 
         self.setWindowTitle("ToneTrace")
@@ -98,17 +100,16 @@ class MainWindow(QMainWindow):
         self.state.extracted_notes = []
         self.state.tuned_notes = None
         self._select_note(None)
+        self.waveform.set_selection(None, None)
         self.piano_roll.set_data(None, [])
         self.sequence.set_notes([])
         self.controls.set_can_export(False)
         self.file_label.setText(f"{path.name} — {path}")
         self.original_player.setSource(QUrl.fromLocalFile(str(path)))
         self.midi_player.setSource(QUrl())
-        try:
-            self.waveform.load_audio(path)
-        except Exception as exc:
-            QMessageBox.warning(self, "Waveform error", f"Audio loaded, but waveform preview failed:\n{exc}")
-        self.transport.set_status("Audio loaded. Click Analyze.")
+        self.waveform.set_message("Loading waveform preview…")
+        self._start_waveform_load(path)
+        self.transport.set_status("Audio loaded. Loading waveform preview in background…")
         self.transport.set_playback_available(original=True, midi=False)
 
     def _seconds_spin(self, *, minimum: float = 0.0) -> QDoubleSpinBox:
@@ -199,6 +200,8 @@ class MainWindow(QMainWindow):
         self.controls.delete_requested.connect(self._delete_selected_note)
         self.controls.retune_requested.connect(self._retune_from_controls)
         self.controls.overlay_toggled.connect(self.piano_roll.set_show_notes)
+        self.controls.zoom_changed.connect(self.piano_roll.set_horizontal_zoom)
+        self.piano_roll.zoom_changed.connect(self.controls.set_zoom_factor)
         self.transport.play_both_requested.connect(self._play_both)
         self.transport.play_original_requested.connect(self._play_original)
         self.transport.play_midi_requested.connect(self._play_midi)
@@ -207,6 +210,7 @@ class MainWindow(QMainWindow):
         self.original_player.positionChanged.connect(self._playback_position_changed)
         self.midi_player.positionChanged.connect(self._midi_position_changed)
         self.waveform.seek_requested.connect(self._seek_seconds)
+        self.waveform.range_selected.connect(self._set_analysis_range_from_waveform)
         self.piano_roll.seek_requested.connect(self._seek_seconds)
         self.piano_roll.note_selected.connect(self._select_note)
         self.piano_roll.note_edited.connect(self._edit_note_from_piano_roll)
@@ -223,6 +227,41 @@ class MainWindow(QMainWindow):
         if path:
             self.load_audio(Path(path))
 
+    def _start_waveform_load(self, path: Path) -> None:
+        thread = QThread(self)
+        worker = WaveformWorker(path)
+        self.waveform_runs.append((thread, worker))
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._waveform_finished)
+        worker.failed.connect(self._waveform_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(lambda thread=thread, worker=worker: self._waveform_thread_finished(thread, worker))
+        thread.start()
+
+    def _waveform_finished(self, result: WaveformResult) -> None:
+        if self.state.audio_path != result.audio_path:
+            return
+        self.waveform.set_preview(
+            result.samples,
+            sample_rate=result.sample_rate,
+            duration_seconds=result.duration_seconds,
+        )
+        self.controls.set_audio_duration(result.duration_seconds)
+        self._set_status("Waveform preview ready. Click Analyze.")
+
+    def _waveform_failed(self, audio_path: Path, message: str) -> None:
+        if self.state.audio_path != audio_path:
+            return
+        self.waveform.set_message("Waveform preview unavailable")
+        self._set_status(f"Audio loaded, but waveform preview failed: {message}")
+
+    def _waveform_thread_finished(self, thread: QThread, worker: WaveformWorker) -> None:
+        self.waveform_runs = [(run_thread, run_worker) for run_thread, run_worker in self.waveform_runs if run_thread is not thread]
+        worker.deleteLater()
+        thread.deleteLater()
+
     def _start_analysis(self) -> None:
         if self.state.audio_path is None:
             QMessageBox.information(self, "Open audio", "Open an audio file before analyzing.")
@@ -237,6 +276,7 @@ class MainWindow(QMainWindow):
         self.state.frame_threshold = self.controls.frame_threshold()
         self.state.min_duration = self.controls.min_duration_seconds()
 
+        range_start_seconds, range_duration_seconds = self.controls.analysis_range()
         request = AnalysisRequest(
             audio_path=self.state.audio_path,
             backend=backend,
@@ -245,6 +285,8 @@ class MainWindow(QMainWindow):
             onset_threshold=self.state.onset_threshold,
             frame_threshold=self.state.frame_threshold,
             min_duration_seconds=self.state.min_duration,
+            range_start_seconds=range_start_seconds,
+            range_duration_seconds=range_duration_seconds,
         )
         self.analysis_thread = QThread(self)
         self.analysis_worker = AnalysisWorker(request)
@@ -257,7 +299,10 @@ class MainWindow(QMainWindow):
         self.analysis_worker.failed.connect(self.analysis_thread.quit)
         self.analysis_thread.finished.connect(self._analysis_thread_finished)
         self.controls.set_busy(True)
-        self._set_status(f"Analyzing with {backend}…")
+        if range_duration_seconds is not None:
+            self._set_status(f"Analyzing {range_duration_seconds:.1f}s range from {range_start_seconds:.1f}s with {backend}…")
+        else:
+            self._set_status(f"Analyzing full audio with {backend}…")
         self.analysis_thread.start()
 
     def _analysis_finished(self, result: AnalysisResult) -> None:
@@ -480,6 +525,12 @@ class MainWindow(QMainWindow):
     def _note_name(pitch: int) -> str:
         names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
         return f"{names[pitch % 12]}{pitch // 12 - 1}"
+
+    def _set_analysis_range_from_waveform(self, start_seconds: float, duration_seconds: float) -> None:
+        self.controls.set_analysis_range(start_seconds, duration_seconds)
+        self.waveform.set_selection(start_seconds, duration_seconds)
+        self._seek_seconds(start_seconds)
+        self._set_status(f"Selected range {start_seconds:.2f}s–{start_seconds + duration_seconds:.2f}s ({duration_seconds:.2f}s). Click Analyze.")
 
     def _seek_seconds(self, seconds: float) -> None:
         milliseconds = max(0, round(seconds * 1000))

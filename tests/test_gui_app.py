@@ -79,6 +79,120 @@ def test_transcription_controls_explain_sliders_offscreen() -> None:
     assert "attack" in controls.split_sensitivity.toolTip()
     assert "CQT activation threshold" in controls.cqt_threshold.toolTip()
     assert "Minimum note length" in controls.min_duration.toolTip()
+    assert "Horizontal zoom" in controls.heatmap_zoom.toolTip()
+    assert "Ctrl" in controls.heatmap_zoom.toolTip()
+    assert controls.analysis_range() == (0.0, None)
+    controls.range_enabled.setChecked(True)
+    controls.range_start.setValue(12.0)
+    controls.range_duration.setValue(30.0)
+    assert controls.analysis_range() == (12.0, 30.0)
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_waveform_widget_selection_handles_refine_range_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.widgets.waveform import WaveformWidget
+
+    app = QApplication.instance() or QApplication([])
+    widget = WaveformWidget()
+    widget.resize(100, 90)
+    widget.set_preview([0.0, 0.5, -0.5], sample_rate=3, duration_seconds=20.0)
+    widget.set_selection(5.0, 10.0)
+
+    assert widget._selection_pixel_bounds() == (25.0, 75.0)
+    assert widget._selection_hit_at(25.0) == "resize_start"
+    assert widget._selection_hit_at(75.0) == "resize_end"
+    assert widget._selection_hit_at(50.0) == "move"
+
+    widget._selection_drag_mode = "resize_start"
+    widget._drag_start_x = 25.0
+    widget._drag_original_start_seconds = 5.0
+    widget._drag_original_duration_seconds = 10.0
+    widget._drag_existing_selection(35.0)
+    assert widget.selection_start_seconds == pytest.approx(7.0)
+    assert widget.selection_duration_seconds == pytest.approx(8.0)
+
+    widget._update_hover_cursor(35.0)
+    assert widget.cursor().shape() == Qt.CursorShape.SizeHorCursor
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_waveform_widget_range_selection_math_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.widgets.waveform import WaveformWidget
+
+    app = QApplication.instance() or QApplication([])
+    widget = WaveformWidget()
+    widget.resize(100, 90)
+    widget.set_preview([0.0, 0.5, -0.5], sample_rate=3, duration_seconds=20.0)
+
+    start, duration = widget._selection_from_pixels(25, 75)
+    widget.set_selection(start, duration)
+
+    assert start == pytest.approx(5.0)
+    assert duration == pytest.approx(10.0)
+    assert widget.selection_start_seconds == pytest.approx(5.0)
+    assert widget.selection_duration_seconds == pytest.approx(10.0)
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_main_window_waveform_range_selection_updates_controls_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+    window.waveform.set_preview([0.0, 0.5, -0.5], sample_rate=3, duration_seconds=20.0)
+
+    window._set_analysis_range_from_waveform(4.0, 8.0)
+
+    assert window.controls.analysis_range() == (4.0, 8.0)
+    assert window.waveform.selection_start_seconds == pytest.approx(4.0)
+    assert window.waveform.selection_duration_seconds == pytest.approx(8.0)
+    assert "Selected range" in window.statusBar().currentMessage()
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_waveform_widget_falls_back_for_non_wav_audio_offscreen(monkeypatch, tmp_path) -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    import notegrabber.gui.widgets.waveform as waveform_module
+    from notegrabber.gui.widgets.waveform import WaveformWidget, downsample_waveform_preview
+
+    def fake_read_wav(_path):
+        raise wave_error
+
+    def fake_load_with_librosa(_path):
+        return [0.0, 0.5, -0.5, 0.25], 4000, 12.5
+
+    wave_error = ValueError("not a wav")
+    monkeypatch.setattr(waveform_module, "read_wav", fake_read_wav)
+    monkeypatch.setattr(WaveformWidget, "_load_with_librosa", staticmethod(fake_load_with_librosa))
+
+    app = QApplication.instance() or QApplication([])
+    widget = WaveformWidget()
+    widget.load_audio(tmp_path / "song.mp3")
+
+    assert widget.samples == [0.0, 0.5, -0.5, 0.25]
+    assert widget.duration_seconds() == pytest.approx(12.5)
+    assert len(downsample_waveform_preview(range(100), max_samples=10)) == 10
     app.processEvents()
 
 
@@ -118,6 +232,160 @@ def test_piano_roll_widget_paints_gui_heatmap_model_offscreen() -> None:
         widget._draw_playhead(painter)
     finally:
         painter.end()
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_piano_roll_horizontal_zoom_expands_timeline_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.state import GuiHeatmap
+    from notegrabber.gui.widgets.piano_roll import PianoRollWidget
+
+    app = QApplication.instance() or QApplication([])
+    widget = PianoRollWidget()
+    widget.resize(320, 180)
+    heatmap = GuiHeatmap(
+        backend="basic-pitch",
+        midi_notes=[60, 61],
+        frame_times=[0.0, 10.0],
+        activations=[[0.0, 0.0], [0.0, 0.0]],
+        sample_rate=1,
+        hop_size=1,
+        window_size=1,
+    )
+    widget.set_data(heatmap, [])
+    fit_width = widget.minimumWidth()
+    fit_seconds_per_pixel = widget.seconds_per_pixel
+
+    widget.set_horizontal_zoom(4.0)
+    zoomed_width = widget.width()
+
+    assert widget.horizontal_zoom == pytest.approx(4.0)
+    assert widget.seconds_per_pixel == pytest.approx(fit_seconds_per_pixel / 4.0)
+    assert widget.minimumWidth() > fit_width
+    widget.zoom_by_wheel_delta(120)
+    assert widget.horizontal_zoom == pytest.approx(4.8)
+    assert widget.width() > zoomed_width
+    widget.zoom_by_wheel_delta(-120)
+    assert widget.horizontal_zoom == pytest.approx(4.0)
+    assert widget.width() == zoomed_width
+    widget.set_horizontal_zoom(1.0)
+    assert widget.width() == fit_width
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_piano_roll_wheel_zoom_syncs_main_window_slider_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.main_window import MainWindow
+    from notegrabber.gui.state import GuiHeatmap
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+    window.state.heatmap = GuiHeatmap(
+        backend="basic-pitch",
+        midi_notes=[60, 61],
+        frame_times=[0.0, 10.0],
+        activations=[[0.0, 0.0], [0.0, 0.0]],
+        sample_rate=1,
+        hop_size=1,
+        window_size=1,
+    )
+    window._set_display_notes([])
+
+    window.piano_roll.zoom_by_wheel_delta(120)
+
+    assert window.controls.zoom_factor() == pytest.approx(1.2)
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_piano_roll_large_heatmap_paint_aggregates_visible_columns_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtGui import QPainter, QPixmap
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.state import GuiHeatmap
+    from notegrabber.gui.widgets.piano_roll import PianoRollWidget
+
+    app = QApplication.instance() or QApplication([])
+    widget = PianoRollWidget()
+    widget.resize(320, 180)
+    frame_count = 10_000
+    note_count = 12
+    heatmap = GuiHeatmap(
+        backend="basic-pitch",
+        midi_notes=list(range(60, 60 + note_count)),
+        frame_times=[index / 86.0 for index in range(frame_count)],
+        activations=[[0.5] * note_count for _index in range(frame_count)],
+        sample_rate=86,
+        hop_size=1,
+        window_size=1,
+    )
+    calls = 0
+
+    def counted_activation(frame_index, note_index):
+        nonlocal calls
+        calls += 1
+        return heatmap.activations[frame_index][note_index]
+
+    object.__setattr__(heatmap, "activation", counted_activation)
+    widget.set_data(heatmap, [])
+
+    pixmap = QPixmap(widget.size())
+    painter = QPainter(pixmap)
+    try:
+        widget._draw_heatmap(painter)
+    finally:
+        painter.end()
+
+    assert calls < frame_count * note_count // 2
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_piano_roll_hover_updates_cursor_for_move_and_resize_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.state import GuiHeatmap, GuiMidiNote
+    from notegrabber.gui.widgets.piano_roll import PianoRollWidget
+
+    app = QApplication.instance() or QApplication([])
+    widget = PianoRollWidget()
+    widget.resize(320, 180)
+    heatmap = GuiHeatmap(
+        backend="basic-pitch",
+        midi_notes=[68, 69, 70],
+        frame_times=[0.0, 0.1, 0.2],
+        activations=[[0.1, 0.9, 0.2], [0.0, 0.8, 0.1], [0.0, 0.1, 0.0]],
+        sample_rate=10,
+        hop_size=1,
+        window_size=1,
+    )
+    note = GuiMidiNote(pitch=69, start_seconds=0.0, duration_seconds=0.2, velocity=100)
+    widget.set_data(heatmap, [note])
+    rect = widget._note_rect(note)
+    assert rect is not None
+
+    widget._update_hover_state(rect.center().x(), rect.center().y())
+    assert widget.hover_note_index == 0
+    assert widget.hover_mode == "move"
+    assert widget.cursor().shape() == Qt.CursorShape.SizeAllCursor
+
+    widget._update_hover_state(rect.left() + 1, rect.center().y())
+    assert widget.hover_mode == "resize_start"
+    assert widget.cursor().shape() == Qt.CursorShape.SizeHorCursor
     app.processEvents()
 
 

@@ -16,6 +16,7 @@ from notegrabber.gui.state import (
     midi_note_to_gui,
     retune_notes_from_heatmap,
 )
+from notegrabber.gui.analysis_worker import _offset_heatmap_document, _offset_midi_notes
 from notegrabber.midi import MidiNote, TICKS_PER_SECOND
 
 
@@ -37,6 +38,18 @@ def test_project_state_current_notes_preserves_empty_tuned_list() -> None:
     assert [note.pitch for note in state.current_notes] == [69]
     state.tuned_notes = []
     assert state.current_notes == []
+
+
+@pytest.mark.gui
+def test_analysis_worker_offsets_range_results_to_original_timeline() -> None:
+    notes = [MidiNote(pitch=60, start_tick=TICKS_PER_SECOND, duration_ticks=TICKS_PER_SECOND // 2, velocity=80)]
+    document = {"frames": [{"time_seconds": 0.0, "activations": [0.5]}, {"time_seconds": 0.1, "activations": [0.2]}]}
+
+    shifted_notes = _offset_midi_notes(notes, 10.0)
+    _offset_heatmap_document(document, 10.0)
+
+    assert shifted_notes[0].start_tick == 11 * TICKS_PER_SECOND
+    assert [frame["time_seconds"] for frame in document["frames"]] == [10.0, 10.1]
 
 
 @pytest.mark.gui

@@ -6,6 +6,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -41,6 +42,11 @@ MIN_DURATION_HELP = (
     "Minimum note length in milliseconds. Raise it to remove tiny blips and glitches; "
     "lower it to keep short ornaments, fast runs, or staccato notes."
 )
+HEATMAP_ZOOM_HELP = (
+    "Horizontal zoom for the heatmap and MIDI notes. 100% fits the full song; "
+    "higher values spread time out so you can scroll to a section and edit notes precisely. "
+    "Tip: hold Ctrl and use the mouse wheel over the piano roll to zoom quickly."
+)
 
 
 class AnalysisControls(QWidget):
@@ -52,6 +58,7 @@ class AnalysisControls(QWidget):
     open_requested = Signal()
     retune_requested = Signal()
     overlay_toggled = Signal(bool)
+    zoom_changed = Signal(float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -62,10 +69,18 @@ class AnalysisControls(QWidget):
         self.split_sensitivity = self._slider(0, 100, int(BASIC_PITCH_ONSET_THRESHOLD * 100))
         self.cqt_threshold = self._slider(0, 100, int(CQT_THRESHOLD * 100))
         self.min_duration = self._slider(0, 500, int(BASIC_PITCH_MIN_DURATION_SECONDS * 1000))
+        self.heatmap_zoom = self._slider(100, 3200, 100)
         self.note_sensitivity.setToolTip(NOTE_SENSITIVITY_HELP)
         self.split_sensitivity.setToolTip(SPLIT_SENSITIVITY_HELP)
         self.cqt_threshold.setToolTip(CQT_THRESHOLD_HELP)
         self.min_duration.setToolTip(MIN_DURATION_HELP)
+        self.heatmap_zoom.setToolTip(HEATMAP_ZOOM_HELP)
+        self.range_enabled = QCheckBox("Analyze range only")
+        self.range_start = self._seconds_spin(0.0)
+        self.range_duration = self._seconds_spin(30.0)
+        self.range_enabled.setToolTip("Analyze only the selected time range instead of the full song. Useful for long MP3s.")
+        self.range_start.setToolTip("Range start time in seconds from the beginning of the original audio.")
+        self.range_duration.setToolTip("Range length in seconds. Keep this small for faster Basic Pitch analysis.")
         self.show_overlay = QCheckBox("Show MIDI overlay")
         self.show_overlay.setChecked(True)
 
@@ -87,6 +102,7 @@ class AnalysisControls(QWidget):
         brand.setObjectName("brandLabel")
         layout.addWidget(brand)
         layout.addWidget(self._build_transcription_group())
+        layout.addWidget(self._build_range_group())
         layout.addWidget(self._build_stub_group("Pitch bend", "No Pitch Bend (reserved)"))
         layout.addWidget(self._build_stub_group("Scale quantize", "Disabled for first milestone"))
         layout.addWidget(self._build_stub_group("Time quantize", "Disabled for first milestone"))
@@ -100,6 +116,7 @@ class AnalysisControls(QWidget):
         self.show_overlay.toggled.connect(self.overlay_toggled.emit)
         for slider in (self.note_sensitivity, self.split_sensitivity, self.cqt_threshold, self.min_duration):
             slider.valueChanged.connect(self.retune_requested.emit)
+        self.heatmap_zoom.valueChanged.connect(lambda value: self.zoom_changed.emit(value / 100.0))
 
     def backend(self) -> str:
         return self.backend_combo.currentText()
@@ -116,10 +133,44 @@ class AnalysisControls(QWidget):
     def min_duration_seconds(self) -> float:
         return self.min_duration.value() / 1000.0
 
+    def zoom_factor(self) -> float:
+        return self.heatmap_zoom.value() / 100.0
+
+    def set_zoom_factor(self, zoom: float) -> None:
+        """Update the zoom slider without re-emitting zoom_changed."""
+
+        previous = self.heatmap_zoom.blockSignals(True)
+        try:
+            self.heatmap_zoom.setValue(max(self.heatmap_zoom.minimum(), min(self.heatmap_zoom.maximum(), round(zoom * 100))))
+        finally:
+            self.heatmap_zoom.blockSignals(previous)
+
+    def analysis_range(self) -> tuple[float, float | None]:
+        if not self.range_enabled.isChecked():
+            return 0.0, None
+        return self.range_start.value(), self.range_duration.value()
+
+    def set_analysis_range(self, start_seconds: float, duration_seconds: float) -> None:
+        """Enable range analysis and update numeric range controls."""
+
+        self.range_enabled.setChecked(True)
+        self.range_start.setValue(max(0.0, start_seconds))
+        self.range_duration.setValue(max(0.01, duration_seconds))
+
+    def set_audio_duration(self, duration_seconds: float) -> None:
+        maximum = max(1.0, min(36_000.0, duration_seconds))
+        self.range_start.setMaximum(maximum)
+        self.range_duration.setMaximum(maximum)
+        if self.range_duration.value() > maximum:
+            self.range_duration.setValue(maximum)
+
     def set_busy(self, busy: bool) -> None:
         self.open_button.setEnabled(not busy)
         self.analyze_button.setEnabled(not busy)
         self.backend_combo.setEnabled(not busy)
+        self.range_enabled.setEnabled(not busy)
+        self.range_start.setEnabled(not busy)
+        self.range_duration.setEnabled(not busy)
 
     def set_can_export(self, enabled: bool) -> None:
         self.export_button.setEnabled(enabled)
@@ -139,6 +190,16 @@ class AnalysisControls(QWidget):
         grid.addWidget(self.export_button, 1, 1)
         return group
 
+    def _build_range_group(self) -> QGroupBox:
+        group = QGroupBox("Analysis range")
+        group.setProperty("panel", "muted")
+        form = QFormLayout(group)
+        form.setVerticalSpacing(8)
+        form.addRow(self.range_enabled)
+        form.addRow("Start", self.range_start)
+        form.addRow("Duration", self.range_duration)
+        return group
+
     def _build_transcription_group(self) -> QGroupBox:
         group = QGroupBox("Transcription")
         group.setProperty("panel", "accent")
@@ -149,6 +210,7 @@ class AnalysisControls(QWidget):
         form.addRow(self._help_label("Split sensitivity ⓘ", SPLIT_SENSITIVITY_HELP), self.split_sensitivity)
         form.addRow(self._help_label("CQT threshold ⓘ", CQT_THRESHOLD_HELP), self.cqt_threshold)
         form.addRow(self._help_label("Min note duration ⓘ", MIN_DURATION_HELP), self.min_duration)
+        form.addRow(self._help_label("Heatmap zoom ⓘ", HEATMAP_ZOOM_HELP), self.heatmap_zoom)
         form.addRow(self.show_overlay)
         return group
 
@@ -185,3 +247,14 @@ class AnalysisControls(QWidget):
         slider.setRange(minimum, maximum)
         slider.setValue(value)
         return slider
+
+    @staticmethod
+    def _seconds_spin(value: float) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(0.0, 36_000.0)
+        spin.setDecimals(2)
+        spin.setSingleStep(1.0)
+        spin.setSuffix(" s")
+        spin.setValue(value)
+        spin.setKeyboardTracking(False)
+        return spin

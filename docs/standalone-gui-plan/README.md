@@ -50,10 +50,10 @@ Implemented in the GUI:
 
 - Basic Pitch default backend with CQT/simple alternatives
 - Qt file dialog/open-on-startup audio loading
-- waveform preview with click-to-seek playhead
-- background analysis worker using existing Python backends
-- heatmap/piano-roll widget with MIDI note overlay and keyboard axis
-- NeuralNote-inspired left controls for backend, note sensitivity, split sensitivity, CQT threshold, and minimum duration
+- background waveform preview loading with click-to-seek playhead, drag-to-select analysis ranges, and draggable selection handles, including non-WAV fallback previews through standalone/librosa dependencies
+- background analysis worker using existing Python backends, with optional time-range extraction for long files
+- heatmap/piano-roll widget with MIDI note overlay, keyboard axis, slider/Ctrl+wheel horizontal zoom/scrolling, and pixel-aggregated drawing for large/long analyses
+- NeuralNote-inspired left controls for backend, note sensitivity, split sensitivity, CQT threshold, minimum duration, heatmap zoom, and analysis range
 - original audio and rendered MIDI WAV playback through Qt Multimedia
 - Play both / Original / MIDI / Pause / Stop transport controls
 - seeking both players from waveform, piano roll, or sequence table
@@ -61,14 +61,14 @@ Implemented in the GUI:
 - MIDI rectangle selection/highlighting with selected-note details
 - Delete/Backspace/delete button removes selected notes from the tuned list
 - selected-note inspector editing for start, duration, pitch, and velocity
-- piano-roll drag editing for moving notes and resizing note boundaries
+- piano-roll hover handles/cursor feedback plus drag editing for moving notes and resizing note boundaries
 - MIDI WAV preview re-rendering after inspector edits, deletes, CQT retunes, and committed piano-roll drags when rendering is enabled
 - polished first-pass dark pro-DAW Qt theme with warm red/orange/yellow accents, rounded cards, styled controls, compact action pad, SVG button icons, and explanatory slider tooltips
 - export current analyzed/tuned/edited/deleted note list to MIDI
 
 Still pending:
 
-- visual drag handles/cursors/ghost-preview polish
+- optional ghost-preview polish during drag
 - undo/redo for edits
 - off-main-thread/debounced MIDI preview rendering if synchronous TiMidity++ rendering becomes slow
 - custom knob/dial styling for the transcription controls

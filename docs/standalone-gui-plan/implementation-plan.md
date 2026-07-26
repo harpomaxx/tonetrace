@@ -180,6 +180,7 @@ Implemented note editing:
 - highlight selected note and show pitch/start/duration/velocity details
 - delete selected note with Delete/Backspace or the delete button
 - edit selected note start, duration, pitch, and velocity in the inspector
+- show resize handles and cursor feedback for hovered/selected notes
 - drag selected/hovered notes horizontally to move them in time
 - drag note left/right edges to resize start/end boundaries
 - drag note bodies vertically to change pitch to the target piano-roll row
@@ -187,7 +188,7 @@ Implemented note editing:
 
 Still pending polish:
 
-- visual resize handles/cursors/ghost preview before commit
+- ghost preview before commit
 - keyboard nudging and undo/redo
 - off-main-thread/debounced MIDI preview rendering if synchronous rendering becomes slow
 
@@ -248,9 +249,9 @@ Manual tests:
 The project has advanced beyond the original first implementation target. Current native GUI support includes Milestones 0–4 in basic form:
 
 - `notegrabber-gui` / `notegrabber gui` launch the PySide6 app.
-- file picker or startup argument loads audio and draws waveform.
-- Analyze runs Basic Pitch/CQT/simple in a `QThread` worker.
-- heatmap and MIDI note rectangles are displayed in a custom piano-roll widget.
+- file picker or startup argument loads audio and draws waveform; dragging the waveform selects the analysis range, and selection handles refine/move it.
+- Analyze runs Basic Pitch/CQT/simple in a `QThread` worker, optionally on a selected time range for long files.
+- heatmap and MIDI note rectangles are displayed in a custom piano-roll widget with horizontal zoom/scrolling.
 - sequence table groups notes/chords by onset.
 - Qt Multimedia compares original audio and rendered MIDI WAV.
 - waveform, piano roll, and sequence rows seek playback/playhead.
@@ -258,8 +259,9 @@ The project has advanced beyond the original first implementation target. Curren
 - clicking a note selects/highlights it and shows details.
 - Delete/Backspace/delete button removes selected notes from the tuned note list.
 - selected-note inspector edits start, duration, pitch, and velocity.
+- piano-roll hover/selection shows resize handles and cursor feedback.
 - piano-roll drag moves notes in time/pitch and edge-drag resizes start/end boundaries.
 - committed edits/deletes/CQT retunes re-render the MIDI WAV preview when rendering is enabled.
 - Export MIDI writes current analyzed/tuned/edited/deleted notes.
 
-Next implementation target: add editing polish such as visual handles/cursors, undo/redo, debounced/background MIDI-preview rendering if needed, and project/session persistence.
+Next implementation target: add editing polish such as keyboard nudging, undo/redo, optional ghost previews during drag, debounced/background MIDI-preview rendering if needed, and project/session persistence.

@@ -97,20 +97,25 @@ Use real Qt widgets first, custom knob styling later:
 - show selected audio filename, sample rate, duration
 - waveform overview with playhead
 - click to seek
+- drag to select an analysis range and sync numeric range controls
+- drag selection edges/body to refine or move the range
 
 ### Piano-roll/heatmap
 
 - y-axis: MIDI notes 21–108 with piano keyboard
 - x-axis: seconds/frames
-- heatmap as image raster
+- heatmap as raster/aggregated columns depending on zoom and file length
+- horizontal zoom slider plus Ctrl+mouse-wheel zoom and scroll for working on song sections
+- analysis range controls for transcribing only a selected start/duration in long files
 - MIDI notes as rectangles
 - selected-note label: MIDI pitch, time, duration, velocity
 - inspector fields: start, duration, pitch, velocity
 - click: select/highlight note and seek playback
 - Delete/Backspace or left-panel button deletes selected note
+- hover/selection shows resize handles and move/resize cursors
 - drag note body horizontally/vertically to move time/pitch
 - drag note edges to resize start/end boundaries
-- later: visual handles/cursors, keyboard nudging, undo/redo
+- later: keyboard nudging, undo/redo, optional ghost preview
 
 ### Sequence panel
 

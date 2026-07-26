@@ -80,11 +80,12 @@ notegrabber gui
 The PySide6 GUI follows the standalone GUI plan in `docs/standalone-gui-plan/` and currently includes:
 
 - open audio file action
-- waveform overview
+- background waveform overview loading for WAV plus MP3/FLAC/OGG fallback previews through standalone/librosa dependencies
+- waveform drag selection with draggable edge/body handles that sync analysis-range start/duration controls for section-based transcription
 - Basic Pitch/CQT/simple backend selector
-- NeuralNote-inspired transcription controls
-- background analysis worker
-- heatmap + MIDI rectangle piano-roll widget
+- NeuralNote-inspired transcription controls plus analysis range controls
+- background analysis worker with optional range-only analysis for long files
+- heatmap + MIDI rectangle piano-roll widget with slider/Ctrl+wheel horizontal zoom, scrolling, and pixel-aggregated drawing for large/long analyses
 - onset-grouped detected sequence table
 - original/rendered-MIDI playback controls via Qt Multimedia
 - seek both players by clicking the waveform, piano roll, or sequence rows
@@ -92,7 +93,7 @@ The PySide6 GUI follows the standalone GUI plan in `docs/standalone-gui-plan/` a
 - select/highlight note rectangles in the piano roll
 - selected-note detail label with highlighted note name plus MIDI pitch/start/duration/velocity
 - inspector fields for editing selected-note start, duration, pitch, and velocity
-- piano-roll drag editing: move time/pitch and resize note boundaries from either edge
+- piano-roll hover/selection handles and cursor feedback for moving notes or resizing either edge
 - delete selected notes with Delete/Backspace or the delete button
 - sequence table and piano roll update after edits/deletion
 - rendered MIDI WAV preview updates after inspector edits, deletes, CQT retunes, and committed piano-roll drags when TiMidity++ is available

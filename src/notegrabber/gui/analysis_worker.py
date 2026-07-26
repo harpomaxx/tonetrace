@@ -6,8 +6,10 @@ import json
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from notegrabber.analyzer import BackendName, analyze_wav_to_midi
+from notegrabber.midi import MidiNote, TICKS_PER_SECOND, write_midi
 from notegrabber.visualizer import render_midi_to_wav
 
 from .state import GuiHeatmap, GuiMidiNote, heatmap_from_document, midi_notes_to_gui
@@ -39,6 +41,8 @@ class AnalysisRequest:
     onset_threshold: float
     frame_threshold: float
     min_duration_seconds: float
+    range_start_seconds: float = 0.0
+    range_duration_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -77,9 +81,22 @@ class AnalysisWorker(QObject):
             heatmap_path = work_dir / "heatmap.json"
             rendered_path = work_dir / "analysis.wav"
 
+            analysis_audio_path = self.request.audio_path
+            offset_seconds = self._range_start_seconds()
+            if self.request.range_duration_seconds is not None:
+                self.progress.emit(
+                    f"Preparing {self.request.range_duration_seconds:.1f}s range starting at {offset_seconds:.1f}s…"
+                )
+                analysis_audio_path = _extract_audio_range(
+                    self.request.audio_path,
+                    work_dir / "analysis-range.wav",
+                    start_seconds=offset_seconds,
+                    duration_seconds=self.request.range_duration_seconds,
+                )
+
             self.progress.emit(f"Analyzing with {self.request.backend}…")
             midi_notes = analyze_wav_to_midi(
-                self.request.audio_path,
+                analysis_audio_path,
                 midi_path,
                 heatmap_path=heatmap_path,
                 backend=self.request.backend,
@@ -89,6 +106,11 @@ class AnalysisWorker(QObject):
                 min_duration_seconds=self.request.min_duration_seconds,
             )
             heatmap_document = json.loads(heatmap_path.read_text(encoding="utf-8"))
+            if offset_seconds:
+                midi_notes = _offset_midi_notes(midi_notes, offset_seconds)
+                _offset_heatmap_document(heatmap_document, offset_seconds)
+                write_midi(midi_path, midi_notes)
+                heatmap_path.write_text(json.dumps(heatmap_document, indent=2), encoding="utf-8")
             heatmap = heatmap_from_document(heatmap_document)
             notes = midi_notes_to_gui(midi_notes, source=self.request.backend)
 
@@ -112,3 +134,55 @@ class AnalysisWorker(QObject):
             )
         except Exception as exc:  # pragma: no cover - exercised by manual GUI flows
             self.failed.emit(str(exc))
+
+    def _range_start_seconds(self) -> float:
+        return max(0.0, float(self.request.range_start_seconds))
+
+
+def _offset_midi_notes(notes: list[MidiNote], offset_seconds: float) -> list[MidiNote]:
+    """Return MIDI notes shifted later by offset seconds."""
+
+    offset_ticks = max(0, round(offset_seconds * TICKS_PER_SECOND))
+    return [
+        MidiNote(
+            pitch=note.pitch,
+            start_tick=max(0, note.start_tick + offset_ticks),
+            duration_ticks=note.duration_ticks,
+            velocity=note.velocity,
+        )
+        for note in notes
+    ]
+
+
+def _offset_heatmap_document(document: dict[str, Any], offset_seconds: float) -> None:
+    """Shift a heatmap document's frame times in-place by offset seconds."""
+
+    for frame in document.get("frames", []):
+        frame["time_seconds"] = float(frame.get("time_seconds", 0.0)) + offset_seconds
+
+
+def _extract_audio_range(input_audio: Path, output_wav: Path, *, start_seconds: float, duration_seconds: float) -> Path:
+    """Decode a time range from any librosa-supported audio file into a temporary WAV."""
+
+    if duration_seconds <= 0:
+        raise ValueError("analysis range duration must be greater than 0 seconds")
+    try:
+        import librosa  # type: ignore[import-not-found]
+        import soundfile as sf  # type: ignore[import-not-found]
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Range analysis requires librosa/soundfile; install with `python3 -m pip install -e '.[standalone]'`."
+        ) from exc
+
+    audio, sample_rate = librosa.load(
+        input_audio,
+        sr=None,
+        mono=True,
+        offset=max(0.0, start_seconds),
+        duration=duration_seconds,
+    )
+    if len(audio) == 0:
+        raise ValueError("selected analysis range contains no decoded audio")
+    output_wav.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(output_wav, audio, sample_rate)
+    return output_wav
