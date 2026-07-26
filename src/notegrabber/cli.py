@@ -26,9 +26,9 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_parser.add_argument("--heatmap", type=Path, help="optional output heatmap JSON file path")
     analyze_parser.add_argument(
         "--backend",
-        choices=("simple", "cqt"),
+        choices=("simple", "cqt", "basic-pitch"),
         default="simple",
-        help="analysis backend to use: simple deterministic DSP or CQT/librosa (default: simple)",
+        help="analysis backend to use: simple deterministic DSP, CQT/librosa, or Spotify Basic Pitch ML (default: simple)",
     )
     analyze_parser.set_defaults(handler=_handle_analyze)
 
@@ -41,9 +41,9 @@ def build_parser() -> argparse.ArgumentParser:
     visualize_parser.add_argument("--out-dir", required=True, type=Path, help="output directory for index.html and generated assets")
     visualize_parser.add_argument(
         "--backend",
-        choices=("simple", "cqt"),
+        choices=("simple", "cqt", "basic-pitch"),
         default="cqt",
-        help="analysis backend to visualize: simple deterministic DSP or CQT/librosa (default: cqt)",
+        help="analysis backend to visualize: simple deterministic DSP, CQT/librosa, or Spotify Basic Pitch ML (default: cqt)",
     )
     visualize_parser.add_argument("--no-render-midi", action="store_true", help="do not invoke TiMidity++ to render MIDI to WAV")
     visualize_parser.set_defaults(handler=_handle_visualize)

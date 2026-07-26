@@ -29,7 +29,7 @@ def test_visualize_creates_cqt_html_heatmap_and_midi_assets(tmp_path: Path) -> N
     assert (out_dir / "heatmap.json").exists()
     assert (out_dir / "a4.wav").exists()
     html = (out_dir / "index.html").read_text(encoding="utf-8")
-    assert "CQT heatmap" in html
+    assert "cqt heatmap" in html
     assert "Download MIDI" in html
     assert "id=\"tooltip\"" in html
     assert "id=\"cursorReadout\"" in html

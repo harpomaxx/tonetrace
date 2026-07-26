@@ -88,6 +88,7 @@ def build_html(
     """Return a self-contained HTML viewer with embedded heatmap/note data."""
 
     note_payload = [asdict(note) | {"start_seconds": note.start_tick / TICKS_PER_SECOND, "duration_seconds": note.duration_ticks / TICKS_PER_SECOND} for note in notes]
+    backend_label = str(heatmap.get("backend", "unknown"))
     heatmap_json = json.dumps(heatmap, separators=(",", ":"))
     notes_json = json.dumps(note_payload, separators=(",", ":"))
     title_html = html.escape(title)
@@ -149,8 +150,8 @@ def build_html(
     <button id="pauseBoth">Pause both</button>
   </section>
   <section class="panel">
-    <h2>CQT heatmap / sample map</h2>
-    <p class="meta">Higher pitches are at the top. Brighter colors mean stronger salience. Red rectangles are MIDI notes extracted from the heatmap.</p>
+    <h2>{html.escape(backend_label)} heatmap / sample map</h2>
+    <p class="meta">Higher pitches are at the top. Brighter colors mean stronger salience. Red rectangles are MIDI notes extracted by the selected backend.</p>
     <div id="viewer" class="viewer">
       <canvas id="heatmap"></canvas>
       <canvas id="overlay"></canvas>

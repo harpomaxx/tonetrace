@@ -35,6 +35,7 @@ def test_analyze_help_documents_input_and_output_arguments() -> None:
     assert "--heatmap" in combined_output
     assert "--backend" in combined_output
     assert "cqt" in combined_output
+    assert "basic-pitch" in combined_output
     assert any(term in combined_output for term in ("input", "audio", "wav"))
 
 
@@ -50,4 +51,5 @@ def test_visualize_help_documents_cqt_and_out_dir() -> None:
     assert "--out-dir" in combined_output
     assert "--backend" in combined_output
     assert "cqt" in combined_output
+    assert "basic-pitch" in combined_output
     assert "timidity" in combined_output.lower()

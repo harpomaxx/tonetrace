@@ -20,6 +20,7 @@ Main commands:
 ```bash
 notegrabber analyze input.wav --out output.mid
 notegrabber analyze input.wav --out output.mid --heatmap heatmap.json --backend cqt
+notegrabber analyze input.wav --out output.mid --heatmap heatmap.json --backend basic-pitch
 notegrabber visualize input.wav --out-dir viewer-dir
 ```
 
@@ -27,6 +28,7 @@ Backends:
 
 - `simple` — deterministic stdlib DSP baseline for synthetic test fixtures.
 - `cqt` — librosa Constant-Q Transform backend for more music-aligned heatmaps and baseline MIDI extraction.
+- `basic-pitch` — Spotify Basic Pitch/ONNX backend for stronger ML note transcription and probability heatmaps.
 
 The visualization command defaults to CQT and writes:
 
@@ -44,7 +46,7 @@ Install dev dependencies:
 
 ```bash
 python3 -m pip install -r requirements-dev.txt
-python3 -m pip install -e '.[cqt]'
+python3 -m pip install -e '.[ml]'
 ```
 
 Run tests:
@@ -62,6 +64,7 @@ python3 -m pytest -m tier2
 python3 -m pytest -m tier3
 python3 -m pytest -m heatmap
 python3 -m pytest -m cqt
+python3 -m pytest -m basic_pitch
 ```
 
 ## Local sample
@@ -80,7 +83,7 @@ These are working artifacts, not core source code.
 
 ## Recommended next steps
 
-1. Add `--backend basic-pitch` using Spotify Basic Pitch for stronger ML transcription.
-2. Improve note grouping/threshold controls for CQT.
-3. Add UI controls to the generated HTML viewer: threshold slider, show/hide note overlay, zoom controls.
+1. Improve note grouping/threshold controls for CQT and Basic Pitch.
+2. Add UI controls to the generated HTML viewer: threshold slider, show/hide note overlay, zoom controls.
+3. Compare CQT vs Basic Pitch outputs on real samples and add tolerant regression fixtures if legally/shareably possible.
 4. Later, move toward a native Linux standalone/plugin implementation using JUCE/DPF/iPlug2/NIH-plug.

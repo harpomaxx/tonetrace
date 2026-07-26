@@ -22,7 +22,9 @@ ACTIVITY_RATIO = 0.20
 PITCH_RATIO = 0.35
 CQT_THRESHOLD = 0.45
 MIN_NOTE_FRAMES = 1
-BackendName = Literal["simple", "cqt"]
+BASIC_PITCH_ONSET_THRESHOLD = 0.5
+BASIC_PITCH_FRAME_THRESHOLD = 0.3
+BackendName = Literal["simple", "cqt", "basic-pitch"]
 
 
 @dataclass(frozen=True)
@@ -99,6 +101,13 @@ def analyze_wav_to_midi(
     if backend == "cqt":
         heatmap = build_cqt_heatmap(input_wav)
         notes = notes_from_heatmap(heatmap)
+        write_midi(output_midi, notes)
+        if heatmap_path is not None:
+            write_heatmap(heatmap_path, heatmap)
+        return notes
+
+    if backend == "basic-pitch":
+        notes, heatmap = analyze_basic_pitch(input_wav)
         write_midi(output_midi, notes)
         if heatmap_path is not None:
             write_heatmap(heatmap_path, heatmap)
@@ -213,6 +222,77 @@ def build_cqt_heatmap(input_wav: Path) -> dict[str, object]:
         sample_rate=int(sample_rate),
         hop_size=HOP_SIZE,
         window_size=WINDOW_SIZE,
+        midi_notes=midi_notes,
+        frames=frames,
+    )
+
+
+def analyze_basic_pitch(input_audio: Path) -> tuple[list[MidiNote], dict[str, object]]:
+    """Analyze audio with Spotify Basic Pitch and return notes plus model salience."""
+
+    try:
+        import basic_pitch
+        from basic_pitch import constants as basic_pitch_constants
+        from basic_pitch.inference import predict
+    except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional environment
+        raise RuntimeError(
+            "Basic Pitch backend requires optional dependencies; install with "
+            "`python3 -m pip install -e .[basic-pitch]` or `python3 -m pip install -r requirements-dev.txt`"
+        ) from exc
+
+    model_path = Path(basic_pitch.__file__).parent / "saved_models" / "icassp_2022" / "nmp.onnx"
+    if not model_path.exists():
+        raise RuntimeError("Basic Pitch ONNX model was not found; install `basic-pitch[onnx]`")
+
+    model_output, _midi_data, note_events = predict(
+        input_audio,
+        model_or_model_path=model_path,
+        onset_threshold=BASIC_PITCH_ONSET_THRESHOLD,
+        frame_threshold=BASIC_PITCH_FRAME_THRESHOLD,
+        midi_tempo=120,
+    )
+    notes = [_basic_pitch_event_to_midi_note(event) for event in note_events]
+    heatmap = build_basic_pitch_heatmap(model_output, basic_pitch_constants)
+    return sorted(notes, key=lambda note: (note.start_tick, note.pitch)), heatmap
+
+
+def _basic_pitch_event_to_midi_note(event: object) -> MidiNote:
+    start_seconds, end_seconds, pitch, confidence, _pitch_bends = event  # type: ignore[misc]
+    start_tick = round(float(start_seconds) * TICKS_PER_SECOND)
+    duration_ticks = max(1, round((float(end_seconds) - float(start_seconds)) * TICKS_PER_SECOND))
+    velocity = max(1, min(127, round(float(confidence) * 127)))
+    return MidiNote(pitch=int(pitch), start_tick=start_tick, duration_ticks=duration_ticks, velocity=velocity)
+
+
+def build_basic_pitch_heatmap(model_output: dict[str, object], basic_pitch_constants: object) -> dict[str, object]:
+    """Convert Basic Pitch note probabilities into the common heatmap JSON schema."""
+
+    try:
+        import numpy as np
+    except ModuleNotFoundError as exc:  # pragma: no cover - basic-pitch depends on numpy
+        raise RuntimeError("Basic Pitch backend requires numpy") from exc
+
+    note_probabilities = np.asarray(model_output["note"], dtype=float)
+    midi_notes = list(MIDI_NOTES)
+    annotation_fps = int(getattr(basic_pitch_constants, "ANNOTATIONS_FPS"))
+    annotation_hop = float(getattr(basic_pitch_constants, "ANNOTATION_HOP"))
+    frames: list[dict[str, object]] = []
+
+    for frame_index in range(note_probabilities.shape[0] if note_probabilities.ndim == 2 else 0):
+        row = note_probabilities[frame_index, : len(midi_notes)]
+        activations = np.clip(row, 0.0, 1.0)
+        frames.append(
+            {
+                "time_seconds": frame_index * annotation_hop,
+                "activations": [round(float(value), 6) for value in activations],
+            }
+        )
+
+    return _heatmap_document(
+        backend="basic-pitch",
+        sample_rate=annotation_fps,
+        hop_size=1,
+        window_size=1,
         midi_notes=midi_notes,
         frames=frames,
     )
