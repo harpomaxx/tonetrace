@@ -36,12 +36,15 @@ def test_analyze_help_documents_input_and_output_arguments() -> None:
     assert "--backend" in combined_output
     assert "cqt" in combined_output
     assert "basic-pitch" in combined_output
+    assert "--onset-threshold" in combined_output
+    assert "--frame-threshold" in combined_output
+    assert "--min-duration" in combined_output
     assert any(term in combined_output for term in ("input", "audio", "wav"))
 
 
 @pytest.mark.cli
 @pytest.mark.tier0
-def test_visualize_help_documents_cqt_and_out_dir() -> None:
+def test_visualize_help_documents_basic_pitch_and_out_dir() -> None:
     command = [*notegrabber_command(), "visualize", "--help"]
 
     result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
@@ -52,4 +55,7 @@ def test_visualize_help_documents_cqt_and_out_dir() -> None:
     assert "--backend" in combined_output
     assert "cqt" in combined_output
     assert "basic-pitch" in combined_output
+    assert "--onset-threshold" in combined_output
+    assert "--frame-threshold" in combined_output
+    assert "--min-duration" in combined_output
     assert "timidity" in combined_output.lower()

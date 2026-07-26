@@ -24,6 +24,7 @@ CQT_THRESHOLD = 0.45
 MIN_NOTE_FRAMES = 1
 BASIC_PITCH_ONSET_THRESHOLD = 0.5
 BASIC_PITCH_FRAME_THRESHOLD = 0.3
+BASIC_PITCH_MIN_DURATION_SECONDS = 0.05
 BackendName = Literal["simple", "cqt", "basic-pitch"]
 
 
@@ -87,6 +88,10 @@ def analyze_wav_to_midi(
     output_midi: Path,
     heatmap_path: Path | None = None,
     backend: BackendName = "simple",
+    threshold: float = CQT_THRESHOLD,
+    onset_threshold: float = BASIC_PITCH_ONSET_THRESHOLD,
+    frame_threshold: float = BASIC_PITCH_FRAME_THRESHOLD,
+    min_duration_seconds: float = BASIC_PITCH_MIN_DURATION_SECONDS,
 ) -> list[MidiNote]:
     """Analyze a WAV file and write detected notes to a MIDI file."""
 
@@ -100,14 +105,19 @@ def analyze_wav_to_midi(
 
     if backend == "cqt":
         heatmap = build_cqt_heatmap(input_wav)
-        notes = notes_from_heatmap(heatmap)
+        notes = notes_from_heatmap(heatmap, threshold=threshold, min_duration_seconds=min_duration_seconds)
         write_midi(output_midi, notes)
         if heatmap_path is not None:
             write_heatmap(heatmap_path, heatmap)
         return notes
 
     if backend == "basic-pitch":
-        notes, heatmap = analyze_basic_pitch(input_wav)
+        notes, heatmap = analyze_basic_pitch(
+            input_wav,
+            onset_threshold=onset_threshold,
+            frame_threshold=frame_threshold,
+            min_duration_seconds=min_duration_seconds,
+        )
         write_midi(output_midi, notes)
         if heatmap_path is not None:
             write_heatmap(heatmap_path, heatmap)
@@ -227,7 +237,12 @@ def build_cqt_heatmap(input_wav: Path) -> dict[str, object]:
     )
 
 
-def analyze_basic_pitch(input_audio: Path) -> tuple[list[MidiNote], dict[str, object]]:
+def analyze_basic_pitch(
+    input_audio: Path,
+    onset_threshold: float = BASIC_PITCH_ONSET_THRESHOLD,
+    frame_threshold: float = BASIC_PITCH_FRAME_THRESHOLD,
+    min_duration_seconds: float = BASIC_PITCH_MIN_DURATION_SECONDS,
+) -> tuple[list[MidiNote], dict[str, object]]:
     """Analyze audio with Spotify Basic Pitch and return notes plus model salience."""
 
     try:
@@ -247,8 +262,9 @@ def analyze_basic_pitch(input_audio: Path) -> tuple[list[MidiNote], dict[str, ob
     model_output, _midi_data, note_events = predict(
         input_audio,
         model_or_model_path=model_path,
-        onset_threshold=BASIC_PITCH_ONSET_THRESHOLD,
-        frame_threshold=BASIC_PITCH_FRAME_THRESHOLD,
+        onset_threshold=onset_threshold,
+        frame_threshold=frame_threshold,
+        minimum_note_length=min_duration_seconds * 1000.0,
         midi_tempo=120,
     )
     notes = [_basic_pitch_event_to_midi_note(event) for event in note_events]
@@ -298,7 +314,11 @@ def build_basic_pitch_heatmap(model_output: dict[str, object], basic_pitch_const
     )
 
 
-def notes_from_heatmap(heatmap: dict[str, object], threshold: float = CQT_THRESHOLD) -> list[MidiNote]:
+def notes_from_heatmap(
+    heatmap: dict[str, object],
+    threshold: float = CQT_THRESHOLD,
+    min_duration_seconds: float = BASIC_PITCH_MIN_DURATION_SECONDS,
+) -> list[MidiNote]:
     """Extract note events from a normalized heatmap by grouping active frames."""
 
     sample_rate = int(heatmap["sample_rate"])
@@ -311,6 +331,7 @@ def notes_from_heatmap(heatmap: dict[str, object], threshold: float = CQT_THRESH
 
     seconds_per_tick = 1.0 / TICKS_PER_SECOND
     hop_seconds = hop_size / sample_rate
+    min_note_frames = max(MIN_NOTE_FRAMES, math.ceil(min_duration_seconds / hop_seconds))
     notes: list[MidiNote] = []
 
     for note_index, pitch in enumerate(midi_notes):
@@ -328,12 +349,12 @@ def notes_from_heatmap(heatmap: dict[str, object], threshold: float = CQT_THRESH
                 else:
                     active_peak = max(active_peak, activation)
             elif active_start is not None:
-                _append_heatmap_note(notes, pitch, active_start, frame_index, hop_seconds, seconds_per_tick, active_peak)
+                _append_heatmap_note(notes, pitch, active_start, frame_index, hop_seconds, seconds_per_tick, active_peak, min_note_frames)
                 active_start = None
                 active_peak = 0.0
 
         if active_start is not None:
-            _append_heatmap_note(notes, pitch, active_start, len(frames), hop_seconds, seconds_per_tick, active_peak)
+            _append_heatmap_note(notes, pitch, active_start, len(frames), hop_seconds, seconds_per_tick, active_peak, min_note_frames)
 
     return sorted(notes, key=lambda note: (note.start_tick, note.pitch))
 
@@ -346,8 +367,9 @@ def _append_heatmap_note(
     hop_seconds: float,
     seconds_per_tick: float,
     peak_activation: float,
+    min_note_frames: int = MIN_NOTE_FRAMES,
 ) -> None:
-    if end_frame - start_frame < MIN_NOTE_FRAMES:
+    if end_frame - start_frame < min_note_frames:
         return
     start_tick = round(start_frame * hop_seconds / seconds_per_tick)
     duration_ticks = max(1, round((end_frame - start_frame) * hop_seconds / seconds_per_tick))

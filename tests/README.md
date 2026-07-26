@@ -21,7 +21,7 @@ Contract expectations:
 - Successful analysis writes a readable Standard MIDI File at the requested output path.
 - With `--heatmap`, successful analysis also writes heatmap JSON containing `midi_notes` and `frames` with per-note activations.
 - `--backend simple` is the deterministic stdlib DSP baseline; `--backend cqt` uses librosa's Constant-Q Transform for a more music-aligned heatmap and baseline MIDI extraction; `--backend basic-pitch` uses Spotify Basic Pitch for ML transcription.
-- `visualize` writes a local `index.html`, CQT heatmap JSON, MIDI file, and, when TiMidity++ is available, a rendered MIDI WAV preview for browser playback.
+- `visualize` writes a local `index.html`, heatmap JSON, MIDI file, and, when TiMidity++ is available, a rendered MIDI WAV preview for browser playback; it defaults to the Basic Pitch backend.
 - A monophonic A4 sine wave produces MIDI note 69.
 - Two sequential sine notes produce the expected pitches in order.
 - A simple triad/chord produces the expected simultaneous pitches.

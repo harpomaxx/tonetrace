@@ -16,8 +16,12 @@ from .midi import MidiNote, TICKS_PER_SECOND
 def create_visualization(
     input_audio: Path,
     out_dir: Path,
-    backend: BackendName = "cqt",
+    backend: BackendName = "basic-pitch",
     render_midi: bool = True,
+    threshold: float = 0.45,
+    onset_threshold: float = 0.5,
+    frame_threshold: float = 0.3,
+    min_duration_seconds: float = 0.05,
 ) -> dict[str, Path | None]:
     """Analyze audio and write an HTML heatmap/MIDI preview directory."""
 
@@ -28,7 +32,16 @@ def create_visualization(
     midi_audio_path = out_dir / "analysis.wav"
     html_path = out_dir / "index.html"
 
-    notes = analyze_wav_to_midi(input_audio, midi_path, heatmap_path=heatmap_path, backend=backend)
+    notes = analyze_wav_to_midi(
+        input_audio,
+        midi_path,
+        heatmap_path=heatmap_path,
+        backend=backend,
+        threshold=threshold,
+        onset_threshold=onset_threshold,
+        frame_threshold=frame_threshold,
+        min_duration_seconds=min_duration_seconds,
+    )
     if input_audio.resolve() != original_audio_path.resolve():
         shutil.copyfile(input_audio, original_audio_path)
 
@@ -121,6 +134,22 @@ def build_html(
   .inspector-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 0.75rem; }}
   .readout {{ background: #101010; border: 1px solid #333; border-radius: 0.5rem; padding: 0.7rem; min-height: 5rem; }}
   .readout strong {{ display: block; color: #fff; margin-bottom: 0.35rem; }}
+  .sequence-toolbar {{ display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }}
+  .sequence-summary {{ color: #ddd; }}
+  .overview-wrap {{ border: 1px solid #333; border-radius: 0.5rem; background: #080808; overflow: hidden; margin-bottom: 0.85rem; }}
+  #sequenceOverview {{ display: block; width: 100%; height: 160px; image-rendering: auto; cursor: pointer; }}
+  .sequence-table-wrap {{ max-height: 18rem; overflow: auto; border: 1px solid #333; border-radius: 0.5rem; }}
+  .sequence-table {{ width: 100%; border-collapse: collapse; font-size: 0.92rem; }}
+  .sequence-table th, .sequence-table td {{ padding: 0.45rem 0.55rem; border-bottom: 1px solid #292929; text-align: left; vertical-align: top; }}
+  .sequence-table th {{ position: sticky; top: 0; z-index: 1; background: #181818; color: #fff; }}
+  .sequence-table tr {{ cursor: pointer; }}
+  .sequence-table tr:hover, .sequence-table tr.selected {{ background: rgba(120, 210, 255, 0.12); }}
+  .note-chip {{ display: inline-block; margin: 0 0.25rem 0.25rem 0; padding: 0.12rem 0.4rem; border: 1px solid #555; border-radius: 999px; background: #222; color: #fff; white-space: nowrap; }}
+  .empty-state {{ color: #aaa; padding: 0.75rem; }}
+  .controls {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.85rem; align-items: end; }}
+  .control {{ display: grid; gap: 0.35rem; color: #ddd; }}
+  .control input[type="range"] {{ width: 100%; }}
+  .inline-control {{ display: flex; gap: 0.5rem; align-items: center; }}
   button {{ background: #2d6cdf; color: white; border: 0; border-radius: 0.4rem; padding: 0.6rem 0.9rem; cursor: pointer; }}
   button:hover {{ background: #3d7cff; }}
   code {{ color: #ffd479; }}
@@ -131,7 +160,7 @@ def build_html(
 <body>
 <header>
   <h1>{title_html}</h1>
-  <p class="meta">Backend: <code id="backend"></code>. Heatmap: <code id="dims"></code>. MIDI notes detected: <code>{len(notes)}</code>. <a href="{midi_file_attr}">Download MIDI</a>.</p>
+  <p class="meta">Backend: <code id="backend"></code>. Heatmap: <code id="dims"></code>. MIDI notes shown: <code id="notesDetected">{len(notes)}</code>. <a href="{midi_file_attr}">Download original MIDI</a>.</p>
 </header>
 <main>
   <section class="panel transport">
@@ -146,6 +175,28 @@ def build_html(
     </div>
   </section>
   <section class="panel">
+    <div class="controls">
+      <div class="control">
+        <label for="sensitivityRange">Live extraction threshold: <output id="sensitivityValue">0.50</output></label>
+        <input id="sensitivityRange" type="range" min="0.05" max="0.95" step="0.01" value="0.50">
+      </div>
+      <div class="control">
+        <label for="minDurationRange">Minimum note duration: <output id="minDurationValue">0.05s</output></label>
+        <input id="minDurationRange" type="range" min="0.00" max="0.50" step="0.01" value="0.05">
+      </div>
+      <div class="control">
+        <label for="zoomRange">Horizontal zoom: <output id="zoomValue">1.0×</output></label>
+        <input id="zoomRange" type="range" min="0.5" max="8" step="0.1" value="1">
+      </div>
+      <div class="control">
+        <label class="inline-control"><input id="showOverlay" type="checkbox" checked> Show MIDI note overlay</label>
+        <div>
+          <button id="fitWidth" type="button">Fit width</button>
+          <button id="resetNotes" type="button">Reset extracted notes</button>
+        </div>
+      </div>
+    </div>
+    <p class="meta">The threshold/min-duration controls re-extract note rectangles from the loaded heatmap in your browser. They do not rewrite the downloaded MIDI file yet.</p>
     <button id="playBoth">Play original + MIDI from current time</button>
     <button id="pauseBoth">Pause both</button>
   </section>
@@ -162,20 +213,52 @@ def build_html(
       <div id="noteInspector" class="readout"><strong>Selected note</strong><span>Click a red MIDI note rectangle to inspect it and jump playback.</span></div>
     </div>
   </section>
+  <section class="panel" aria-labelledby="sequenceHeading">
+    <div class="sequence-toolbar">
+      <div>
+        <h2 id="sequenceHeading">Detected sequence</h2>
+        <p id="sequenceSummary" class="sequence-summary">Extracted notes grouped by onset time.</p>
+      </div>
+      <button id="copySequence" type="button">Copy sequence CSV</button>
+    </div>
+    <p class="meta">The overview shows the whole extracted MIDI phrase at once. Click a block or table row to jump playback and inspect that note/chord.</p>
+    <div class="overview-wrap"><canvas id="sequenceOverview" aria-label="Full detected note sequence overview"></canvas></div>
+    <div class="sequence-table-wrap">
+      <table class="sequence-table">
+        <thead><tr><th>Time</th><th>Notes / chord</th><th>Duration</th><th>Velocity</th><th>Peak activation</th></tr></thead>
+        <tbody id="sequenceBody"></tbody>
+      </table>
+      <div id="sequenceEmpty" class="empty-state" hidden>No notes at this threshold. Lower the threshold or minimum duration.</div>
+    </div>
+  </section>
 </main>
 <script id="heatmapData" type="application/json">{heatmap_json}</script>
 <script id="noteData" type="application/json">{notes_json}</script>
 <script>
 const heatmap = JSON.parse(document.getElementById('heatmapData').textContent);
-const notes = JSON.parse(document.getElementById('noteData').textContent);
+const originalNotes = JSON.parse(document.getElementById('noteData').textContent);
+let notes = originalNotes.slice();
 const canvas = document.getElementById('heatmap');
 const overlay = document.getElementById('overlay');
 const viewer = document.getElementById('viewer');
 const tooltip = document.getElementById('tooltip');
 const cursorReadout = document.getElementById('cursorReadout');
 const noteInspector = document.getElementById('noteInspector');
+const sequenceOverview = document.getElementById('sequenceOverview');
+const sequenceBody = document.getElementById('sequenceBody');
+const sequenceSummary = document.getElementById('sequenceSummary');
+const sequenceEmpty = document.getElementById('sequenceEmpty');
+const notesDetected = document.getElementById('notesDetected');
+const sensitivityRange = document.getElementById('sensitivityRange');
+const sensitivityValue = document.getElementById('sensitivityValue');
+const minDurationRange = document.getElementById('minDurationRange');
+const minDurationValue = document.getElementById('minDurationValue');
+const zoomRange = document.getElementById('zoomRange');
+const zoomValue = document.getElementById('zoomValue');
+const showOverlay = document.getElementById('showOverlay');
 const ctx = canvas.getContext('2d');
 const octx = overlay.getContext('2d');
+const overviewCtx = sequenceOverview.getContext('2d');
 const frames = heatmap.frames;
 const midiNotes = heatmap.midi_notes;
 const cellW = 5;
@@ -240,6 +323,7 @@ function heatmapPoint(event) {{
 }}
 
 function noteAtPoint(point) {{
+  if (!showOverlay.checked) return null;
   for (const note of notes) {{
     const rect = noteRect(note);
     if (point.x >= rect.x && point.x <= rect.x + rect.w && point.y >= rect.y && point.y <= rect.y + rect.h) return note;
@@ -279,11 +363,13 @@ function drawHeatmap() {{
 
 let hoveredNote = null;
 let selectedNote = null;
+let selectedSequenceGroupIndex = null;
+let overviewHitRects = [];
 
 function drawOverlay(playheadSeconds = null) {{
   octx.clearRect(0, 0, width, height);
   octx.lineWidth = 1;
-  for (const note of notes) {{
+  if (showOverlay.checked) for (const note of notes) {{
     const rect = noteRect(note);
     const isSelected = note === selectedNote;
     const isHovered = note === hoveredNote;
@@ -319,6 +405,231 @@ function updateNoteInspector(note) {{
   noteInspector.innerHTML = '<strong>Selected note</strong>' + noteDetailsHtml(note) + '<div class="meta">Playback jumped to this note start.</div>';
 }}
 
+function groupNotesByOnset(noteList, toleranceSeconds = 0.05) {{
+  const sorted = noteList.slice().sort((a, b) => a.start_seconds - b.start_seconds || a.pitch - b.pitch);
+  const groups = [];
+  for (const note of sorted) {{
+    const last = groups[groups.length - 1];
+    if (last && Math.abs(note.start_seconds - last.time) <= toleranceSeconds) {{
+      last.notes.push(note);
+      last.time = Math.min(last.time, note.start_seconds);
+      last.end = Math.max(last.end, note.start_seconds + note.duration_seconds);
+    }} else {{
+      groups.push({{ time: note.start_seconds, end: note.start_seconds + note.duration_seconds, notes: [note] }});
+    }}
+  }}
+  for (const group of groups) {{
+    group.notes.sort((a, b) => a.pitch - b.pitch);
+    group.end = Math.max(...group.notes.map(note => note.start_seconds + note.duration_seconds));
+  }}
+  return groups;
+}}
+
+function groupLabel(group) {{
+  return group.notes.map(note => `${{noteName(note.pitch)}} (${{note.pitch}})`).join(' + ');
+}}
+
+function groupDuration(group) {{
+  return Math.max(0, group.end - group.time);
+}}
+
+function groupVelocity(group) {{
+  if (!group.notes.length) return 0;
+  return Math.round(group.notes.reduce((sum, note) => sum + note.velocity, 0) / group.notes.length);
+}}
+
+function groupPeak(group) {{
+  return group.notes.reduce((peak, note) => Math.max(peak, notePeakActivation(note)), 0);
+}}
+
+function renderSequence() {{
+  const groups = groupNotesByOnset(notes);
+  sequenceBody.innerHTML = '';
+  sequenceEmpty.hidden = groups.length > 0;
+  sequenceSummary.textContent = groups.length
+    ? `${{notes.length}} notes in ${{groups.length}} onset group${{groups.length === 1 ? '' : 's'}}.`
+    : 'No notes at this threshold.';
+
+  groups.forEach((group, index) => {{
+    const row = document.createElement('tr');
+    if (index === selectedSequenceGroupIndex) row.classList.add('selected');
+    row.tabIndex = 0;
+    row.innerHTML =
+      `<td>${{formatSeconds(group.time)}}</td>` +
+      `<td>${{group.notes.map(note => `<span class="note-chip">${{noteName(note.pitch)}} <span class="meta">${{note.pitch}}</span></span>`).join('')}}</td>` +
+      `<td>${{formatSeconds(groupDuration(group))}}</td>` +
+      `<td>${{groupVelocity(group)}}</td>` +
+      `<td>${{groupPeak(group).toFixed(3)}}</td>`;
+    row.addEventListener('click', () => selectSequenceGroup(index, group));
+    row.addEventListener('keydown', event => {{
+      if (event.key === 'Enter' || event.key === ' ') {{
+        event.preventDefault();
+        selectSequenceGroup(index, group);
+      }}
+    }});
+    sequenceBody.appendChild(row);
+  }});
+  drawSequenceOverview(groups);
+}}
+
+function selectSequenceGroup(index, group) {{
+  selectedSequenceGroupIndex = index;
+  selectedNote = group.notes[0] || null;
+  updateNoteInspector(selectedNote);
+  if (selectedNote) {{
+    original.currentTime = group.time;
+    if (midiAudio) midiAudio.currentTime = group.time;
+  }}
+  renderSequence();
+  drawOverlay(original.currentTime || null);
+}}
+
+function drawSequenceOverview(groups = groupNotesByOnset(notes)) {{
+  const cssWidth = Math.max(640, sequenceOverview.parentElement.clientWidth || 640);
+  const cssHeight = 160;
+  const dpr = window.devicePixelRatio || 1;
+  sequenceOverview.width = Math.round(cssWidth * dpr);
+  sequenceOverview.height = Math.round(cssHeight * dpr);
+  sequenceOverview.style.height = cssHeight + 'px';
+  overviewCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  overviewCtx.clearRect(0, 0, cssWidth, cssHeight);
+  overviewCtx.fillStyle = '#080808';
+  overviewCtx.fillRect(0, 0, cssWidth, cssHeight);
+  overviewHitRects = [];
+
+  const durationSeconds = Math.max(0.001, frames.length * heatmap.hop_size / heatmap.sample_rate);
+  const minPitch = midiNotes[0];
+  const maxPitch = midiNotes[midiNotes.length - 1];
+  const pad = 12;
+  const plotW = cssWidth - pad * 2;
+  const plotH = cssHeight - pad * 2;
+
+  overviewCtx.strokeStyle = 'rgba(255,255,255,0.12)';
+  overviewCtx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {{
+    const x = pad + (plotW * i / 4);
+    overviewCtx.beginPath();
+    overviewCtx.moveTo(x, pad);
+    overviewCtx.lineTo(x, cssHeight - pad);
+    overviewCtx.stroke();
+  }}
+  for (let i = 0; i <= 3; i++) {{
+    const y = pad + (plotH * i / 3);
+    overviewCtx.beginPath();
+    overviewCtx.moveTo(pad, y);
+    overviewCtx.lineTo(cssWidth - pad, y);
+    overviewCtx.stroke();
+  }}
+
+  notes.forEach(note => {{
+    const x = pad + (note.start_seconds / durationSeconds) * plotW;
+    const w = Math.max(3, (note.duration_seconds / durationSeconds) * plotW);
+    const y = pad + (1 - ((note.pitch - minPitch) / (maxPitch - minPitch))) * plotH;
+    const h = 6;
+    const selected = note === selectedNote;
+    overviewCtx.fillStyle = selected ? 'rgba(120, 210, 255, 0.9)' : 'rgba(255, 80, 80, 0.78)';
+    overviewCtx.fillRect(x, y - h / 2, w, h);
+    overviewHitRects.push({{ x, y: y - h / 2, w, h, note }});
+  }});
+
+  overviewCtx.fillStyle = 'rgba(230,230,230,0.8)';
+  overviewCtx.font = '12px system-ui, sans-serif';
+  overviewCtx.fillText('0s', pad, cssHeight - 3);
+  overviewCtx.fillText(durationSeconds.toFixed(2) + 's', cssWidth - pad - 42, cssHeight - 3);
+}}
+
+function sequenceCsv() {{
+  const lines = ['time_seconds,notes,duration_seconds,avg_velocity,peak_activation'];
+  for (const group of groupNotesByOnset(notes)) {{
+    lines.push([
+      group.time.toFixed(3),
+      '"' + groupLabel(group).replaceAll('"', '""') + '"',
+      groupDuration(group).toFixed(3),
+      groupVelocity(group),
+      groupPeak(group).toFixed(3),
+    ].join(','));
+  }}
+  return lines.join('\\n');
+}}
+
+function setZoom(value) {{
+  const zoom = Number(value);
+  canvas.style.width = overlay.style.width = (width * zoom) + 'px';
+  canvas.style.height = overlay.style.height = height + 'px';
+  zoomRange.value = String(zoom);
+  zoomValue.textContent = `${{zoom.toFixed(1)}}×`;
+}}
+
+function updateNoteCount() {{
+  notesDetected.textContent = String(notes.length);
+}}
+
+function localPeak(activations, index) {{
+  const value = activations[index] || 0;
+  const left = index > 0 ? activations[index - 1] || 0 : -1;
+  const right = index + 1 < activations.length ? activations[index + 1] || 0 : -1;
+  return value >= left && value >= right;
+}}
+
+function extractNotesFromHeatmap(threshold, minDurationSeconds) {{
+  const secondsPerFrame = heatmap.hop_size / heatmap.sample_rate;
+  const minFrames = Math.max(1, Math.ceil(minDurationSeconds / secondsPerFrame));
+  const extracted = [];
+  for (let noteIndex = 0; noteIndex < midiNotes.length; noteIndex++) {{
+    let activeStart = null;
+    let peak = 0;
+    for (let frameIndex = 0; frameIndex < frames.length; frameIndex++) {{
+      const activation = frames[frameIndex].activations[noteIndex] || 0;
+      const active = activation >= threshold && localPeak(frames[frameIndex].activations, noteIndex);
+      if (active) {{
+        if (activeStart === null) {{
+          activeStart = frameIndex;
+          peak = activation;
+        }} else {{
+          peak = Math.max(peak, activation);
+        }}
+      }} else if (activeStart !== null) {{
+        appendExtractedNote(extracted, noteIndex, activeStart, frameIndex, minFrames, secondsPerFrame, peak);
+        activeStart = null;
+        peak = 0;
+      }}
+    }}
+    if (activeStart !== null) {{
+      appendExtractedNote(extracted, noteIndex, activeStart, frames.length, minFrames, secondsPerFrame, peak);
+    }}
+  }}
+  extracted.sort((a, b) => a.start_seconds - b.start_seconds || a.pitch - b.pitch);
+  return extracted;
+}}
+
+function appendExtractedNote(extracted, noteIndex, startFrame, endFrame, minFrames, secondsPerFrame, peak) {{
+  if (endFrame - startFrame < minFrames) return;
+  const startSeconds = startFrame * secondsPerFrame;
+  const durationSeconds = Math.max(secondsPerFrame, (endFrame - startFrame) * secondsPerFrame);
+  extracted.push({{
+    pitch: midiNotes[noteIndex],
+    start_tick: Math.round(startSeconds * 960),
+    duration_ticks: Math.max(1, Math.round(durationSeconds * 960)),
+    velocity: Math.max(1, Math.min(127, Math.round(peak * 127))),
+    start_seconds: startSeconds,
+    duration_seconds: durationSeconds,
+  }});
+}}
+
+function applyLiveExtraction() {{
+  const threshold = Number(sensitivityRange.value);
+  const minDuration = Number(minDurationRange.value);
+  sensitivityValue.textContent = threshold.toFixed(2);
+  minDurationValue.textContent = `${{minDuration.toFixed(2)}}s`;
+  notes = extractNotesFromHeatmap(threshold, minDuration);
+  selectedNote = null;
+  hoveredNote = null;
+  updateNoteInspector(null);
+  updateNoteCount();
+  renderSequence();
+  drawOverlay(original.currentTime || null);
+}}
+
 viewer.addEventListener('mousemove', (event) => {{
   const point = heatmapPoint(event);
   hoveredNote = noteAtPoint(point);
@@ -351,6 +662,49 @@ viewer.addEventListener('click', (event) => {{
 
 const original = document.getElementById('originalAudio');
 const midiAudio = document.getElementById('midiAudio');
+sensitivityRange.addEventListener('input', applyLiveExtraction);
+minDurationRange.addEventListener('input', applyLiveExtraction);
+zoomRange.addEventListener('input', () => setZoom(zoomRange.value));
+showOverlay.addEventListener('change', () => drawOverlay(original.currentTime || null));
+sequenceOverview.addEventListener('click', event => {{
+  const rect = sequenceOverview.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  const hit = overviewHitRects.find(rect => x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h);
+  if (hit) {{
+    selectedNote = hit.note;
+    selectedSequenceGroupIndex = null;
+    updateNoteInspector(selectedNote);
+    original.currentTime = selectedNote.start_seconds;
+    if (midiAudio) midiAudio.currentTime = selectedNote.start_seconds;
+    renderSequence();
+    drawOverlay(original.currentTime || null);
+  }}
+}});
+document.getElementById('copySequence').addEventListener('click', async () => {{
+  const csv = sequenceCsv();
+  try {{
+    await navigator.clipboard.writeText(csv);
+    sequenceSummary.textContent = 'Copied current sequence CSV to clipboard.';
+  }} catch (_error) {{
+    sequenceSummary.textContent = 'Clipboard unavailable. Select and copy from developer tools if needed.';
+  }}
+}});
+window.addEventListener('resize', () => renderSequence());
+document.getElementById('fitWidth').addEventListener('click', () => {{
+  const fittedZoom = Math.max(0.5, Math.min(8, viewer.clientWidth / width));
+  setZoom(Math.round(fittedZoom * 10) / 10);
+}});
+document.getElementById('resetNotes').addEventListener('click', () => {{
+  notes = originalNotes.slice();
+  selectedNote = null;
+  hoveredNote = null;
+  selectedSequenceGroupIndex = null;
+  updateNoteInspector(null);
+  updateNoteCount();
+  renderSequence();
+  drawOverlay(original.currentTime || null);
+}});
 document.getElementById('playBoth').addEventListener('click', async () => {{
   const t = original.currentTime || 0;
   if (midiAudio) midiAudio.currentTime = t;
@@ -363,6 +717,9 @@ document.getElementById('pauseBoth').addEventListener('click', () => {{
 }});
 original.addEventListener('timeupdate', () => drawOverlay(original.currentTime));
 
+setZoom(1);
+updateNoteCount();
+renderSequence();
 drawHeatmap();
 drawOverlay();
 </script>

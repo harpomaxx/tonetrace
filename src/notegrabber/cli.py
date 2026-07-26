@@ -6,7 +6,13 @@ import argparse
 import sys
 from pathlib import Path
 
-from .analyzer import analyze_wav_to_midi
+from .analyzer import (
+    BASIC_PITCH_FRAME_THRESHOLD,
+    BASIC_PITCH_MIN_DURATION_SECONDS,
+    BASIC_PITCH_ONSET_THRESHOLD,
+    CQT_THRESHOLD,
+    analyze_wav_to_midi,
+)
 from .visualizer import create_visualization
 
 
@@ -30,25 +36,56 @@ def build_parser() -> argparse.ArgumentParser:
         default="simple",
         help="analysis backend to use: simple deterministic DSP, CQT/librosa, or Spotify Basic Pitch ML (default: simple)",
     )
+    add_analysis_tuning_arguments(analyze_parser)
     analyze_parser.set_defaults(handler=_handle_analyze)
 
     visualize_parser = subparsers.add_parser(
         "visualize",
         help="create a browser heatmap viewer and optional rendered MIDI audio",
-        description="Analyze an input audio WAV file with the CQT backend by default and write a local HTML viewer.",
+        description="Analyze an input audio WAV file with the Basic Pitch backend by default and write a local HTML viewer.",
     )
     visualize_parser.add_argument("input_audio", type=Path, help="input audio WAV file")
     visualize_parser.add_argument("--out-dir", required=True, type=Path, help="output directory for index.html and generated assets")
     visualize_parser.add_argument(
         "--backend",
         choices=("simple", "cqt", "basic-pitch"),
-        default="cqt",
-        help="analysis backend to visualize: simple deterministic DSP, CQT/librosa, or Spotify Basic Pitch ML (default: cqt)",
+        default="basic-pitch",
+        help="analysis backend to visualize: simple deterministic DSP, CQT/librosa, or Spotify Basic Pitch ML (default: basic-pitch)",
     )
+    add_analysis_tuning_arguments(visualize_parser)
     visualize_parser.add_argument("--no-render-midi", action="store_true", help="do not invoke TiMidity++ to render MIDI to WAV")
     visualize_parser.set_defaults(handler=_handle_visualize)
 
     return parser
+
+
+def add_analysis_tuning_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add backend tuning flags shared by analyze and visualize."""
+
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=CQT_THRESHOLD,
+        help=f"CQT note extraction activation threshold (default: {CQT_THRESHOLD})",
+    )
+    parser.add_argument(
+        "--onset-threshold",
+        type=float,
+        default=BASIC_PITCH_ONSET_THRESHOLD,
+        help=f"Basic Pitch onset threshold (default: {BASIC_PITCH_ONSET_THRESHOLD})",
+    )
+    parser.add_argument(
+        "--frame-threshold",
+        type=float,
+        default=BASIC_PITCH_FRAME_THRESHOLD,
+        help=f"Basic Pitch frame threshold (default: {BASIC_PITCH_FRAME_THRESHOLD})",
+    )
+    parser.add_argument(
+        "--min-duration",
+        type=float,
+        default=BASIC_PITCH_MIN_DURATION_SECONDS,
+        help=f"minimum extracted note duration in seconds for CQT/Basic Pitch (default: {BASIC_PITCH_MIN_DURATION_SECONDS})",
+    )
 
 
 def _handle_analyze(args: argparse.Namespace) -> int:
@@ -65,7 +102,16 @@ def _handle_analyze(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        notes = analyze_wav_to_midi(input_audio, output_midi, heatmap_path=output_heatmap, backend=backend)
+        notes = analyze_wav_to_midi(
+            input_audio,
+            output_midi,
+            heatmap_path=output_heatmap,
+            backend=backend,
+            threshold=args.threshold,
+            onset_threshold=args.onset_threshold,
+            frame_threshold=args.frame_threshold,
+            min_duration_seconds=args.min_duration,
+        )
     except Exception as exc:  # argparse-style CLI: report failure without a traceback.
         print(f"notegrabber: analyze failed: {exc}", file=sys.stderr)
         return 1
@@ -87,7 +133,16 @@ def _handle_visualize(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        outputs = create_visualization(input_audio, out_dir, backend=backend, render_midi=not args.no_render_midi)
+        outputs = create_visualization(
+            input_audio,
+            out_dir,
+            backend=backend,
+            render_midi=not args.no_render_midi,
+            threshold=args.threshold,
+            onset_threshold=args.onset_threshold,
+            frame_threshold=args.frame_threshold,
+            min_duration_seconds=args.min_duration,
+        )
     except Exception as exc:
         print(f"notegrabber: visualize failed: {exc}", file=sys.stderr)
         return 1

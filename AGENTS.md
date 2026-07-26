@@ -22,6 +22,7 @@ notegrabber analyze input.wav --out output.mid
 notegrabber analyze input.wav --out output.mid --heatmap heatmap.json --backend cqt
 notegrabber analyze input.wav --out output.mid --heatmap heatmap.json --backend basic-pitch
 notegrabber visualize input.wav --out-dir viewer-dir
+notegrabber visualize input.wav --out-dir viewer-dir --backend basic-pitch --onset-threshold 0.5 --frame-threshold 0.3 --min-duration 0.05
 ```
 
 Backends:
@@ -30,7 +31,7 @@ Backends:
 - `cqt` — librosa Constant-Q Transform backend for more music-aligned heatmaps and baseline MIDI extraction.
 - `basic-pitch` — Spotify Basic Pitch/ONNX backend for stronger ML note transcription and probability heatmaps.
 
-The visualization command defaults to CQT and writes:
+The visualization command defaults to Basic Pitch and writes:
 
 - `index.html`
 - `heatmap.json`
@@ -38,7 +39,14 @@ The visualization command defaults to CQT and writes:
 - rendered `analysis.wav` via TiMidity++ when available
 - a copy of the original audio
 
-The browser viewer overlays extracted MIDI rectangles on the heatmap and supports hover/click note inspection.
+The browser viewer overlays extracted MIDI rectangles on the heatmap and supports hover/click note inspection, show/hide overlay, horizontal zoom, fit-to-width, and live threshold/min-duration re-extraction from the loaded heatmap. It also includes a **Detected sequence** panel with a whole-phrase piano-roll overview/minimap, onset-grouped note/chord table, clickable rows/blocks that jump playback, and CSV copy for the currently visible/tuned sequence.
+
+Tuning flags available on both `analyze` and `visualize`:
+
+- `--threshold` — CQT heatmap-to-note activation threshold.
+- `--onset-threshold` — Basic Pitch onset threshold.
+- `--frame-threshold` — Basic Pitch frame threshold.
+- `--min-duration` — minimum note duration in seconds for CQT/Basic Pitch extraction.
 
 ## Test workflow
 
@@ -55,6 +63,8 @@ Run tests:
 NOTEGRABBER_BIN=notegrabber python3 -m pytest -q
 ```
 
+Current expected result: **16 passed**.
+
 Incremental markers:
 
 ```bash
@@ -69,7 +79,7 @@ python3 -m pytest -m basic_pitch
 
 ## Local sample
 
-`oxi.wav` is a local real-audio sample used for manual testing. Generated outputs are under `out/`, especially `out/oxi-viewer/index.html`.
+`oxi.wav` is a local real-audio sample used for manual testing. Generated outputs are under `out/`, especially `out/oxi-viewer/index.html`. The viewer has most recently been generated with the default Basic Pitch backend.
 
 These are working artifacts, not core source code.
 
@@ -79,11 +89,12 @@ These are working artifacts, not core source code.
 - Prefer adding tests before changing analysis behavior.
 - Do not commit generated caches: `.pytest_cache/`, `__pycache__/`, etc.
 - Treat `.pi-subagents/` as agent/runtime artifacts, not project source.
-- Current CQT extraction is still heuristic. For production-quality transcription, the next major step is a `basic-pitch` backend or a native ONNX/NeuralNote-inspired pipeline.
+- CQT extraction is still heuristic. Basic Pitch is currently the best default backend for real samples.
+- If editing `visualizer.py`, regenerate `out/oxi-viewer/index.html` for manual checks and run a JavaScript syntax check on the extracted script when possible (for example with `node --check`) because the viewer is generated as an embedded script string.
 
 ## Recommended next steps
 
-1. Improve note grouping/threshold controls for CQT and Basic Pitch.
-2. Add UI controls to the generated HTML viewer: threshold slider, show/hide note overlay, zoom controls.
-3. Compare CQT vs Basic Pitch outputs on real samples and add tolerant regression fixtures if legally/shareably possible.
+1. Add export of browser-tuned notes back to MIDI (the viewer currently retunes overlays/tables in-browser but does not rewrite MIDI).
+2. Add explicit compare mode for CQT vs Basic Pitch outputs on one page.
+3. Add tolerant regression fixtures/metrics for real samples if legally/shareably possible.
 4. Later, move toward a native Linux standalone/plugin implementation using JUCE/DPF/iPlug2/NIH-plug.
