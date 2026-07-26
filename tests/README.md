@@ -1,6 +1,6 @@
 # notegrabber CLI contract tests
 
-This suite defines the expected command-line contract for a future `notegrabber` audio-to-MIDI tool. It does **not** include or implement the production tool.
+This suite defines the expected contract for the current `notegrabber` audio-to-MIDI spike: CLI analysis, browser visualization/server behavior, and optional PySide6 GUI model/widget behavior.
 
 ## Expected CLI
 
@@ -12,6 +12,8 @@ $NOTEGRABBER_BIN analyze <input-audio.wav> --out <output.mid> --heatmap <output.
 $NOTEGRABBER_BIN analyze <input-audio.wav> --out <output.mid> --heatmap <output.json> --backend cqt
 $NOTEGRABBER_BIN analyze <input-audio.wav> --out <output.mid> --heatmap <output.json> --backend basic-pitch
 $NOTEGRABBER_BIN visualize <input-audio.wav> --out-dir <viewer-dir>
+$NOTEGRABBER_BIN gui
+notegrabber-gui
 ```
 
 Contract expectations:
@@ -22,6 +24,7 @@ Contract expectations:
 - With `--heatmap`, successful analysis also writes heatmap JSON containing `midi_notes` and `frames` with per-note activations.
 - `--backend simple` is the deterministic stdlib DSP baseline; `--backend cqt` uses librosa's Constant-Q Transform for a more music-aligned heatmap and baseline MIDI extraction; `--backend basic-pitch` uses Spotify Basic Pitch for ML transcription.
 - `visualize` writes a local `index.html`, heatmap JSON, MIDI file, and, when TiMidity++ is available, a rendered MIDI WAV preview for browser playback; it defaults to the Basic Pitch backend.
+- `gui`/`notegrabber-gui` launches the optional PySide6 standalone app with waveform, analysis, playback, note editing, and MIDI export.
 - A monophonic A4 sine wave produces MIDI note 69.
 - Two sequential sine notes produce the expected pitches in order.
 - A simple triad/chord produces the expected simultaneous pitches.
@@ -39,7 +42,7 @@ python -m pip install -r requirements-dev.txt
 Run the tests:
 
 ```sh
-pytest
+NOTEGRABBER_BIN=notegrabber pytest
 ```
 
 Run incrementally while building the tool:
@@ -53,6 +56,7 @@ pytest -m edge     # silence and error handling
 pytest -m heatmap  # A4 sine -> MIDI note 69 plus heatmap JSON contract
 pytest -m cqt          # optional librosa/CQT backend and visualization checks
 pytest -m basic_pitch  # optional Spotify Basic Pitch backend checks
+pytest -m gui          # GUI model/editing tests, plus PySide6 widget smoke tests when installed
 ```
 
 If the CLI is not installed, tests that execute the CLI are skipped with a message naming `NOTEGRABBER_BIN`. To run against a local build:

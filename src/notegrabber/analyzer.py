@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import math
 import struct
 import wave
@@ -246,9 +248,10 @@ def analyze_basic_pitch(
     """Analyze audio with Spotify Basic Pitch and return notes plus model salience."""
 
     try:
-        import basic_pitch
-        from basic_pitch import constants as basic_pitch_constants
-        from basic_pitch.inference import predict
+        with _suppress_basic_pitch_optional_backend_warnings():
+            import basic_pitch
+            from basic_pitch import constants as basic_pitch_constants
+            from basic_pitch.inference import predict
     except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional environment
         raise RuntimeError(
             "Basic Pitch backend requires optional dependencies; install with "
@@ -270,6 +273,23 @@ def analyze_basic_pitch(
     notes = [_basic_pitch_event_to_midi_note(event) for event in note_events]
     heatmap = build_basic_pitch_heatmap(model_output, basic_pitch_constants)
     return sorted(notes, key=lambda note: (note.start_tick, note.pitch)), heatmap
+
+
+@contextlib.contextmanager
+def _suppress_basic_pitch_optional_backend_warnings():
+    """Silence Basic Pitch warnings for unused CoreML/TensorFlow backends.
+
+    We explicitly use the ONNX model, so missing CoreML/TensorFlow packages are
+    expected on Linux and should not alarm GUI users during analysis.
+    """
+
+    root_logger = logging.getLogger()
+    previous_disabled_level = root_logger.manager.disable
+    logging.disable(logging.ERROR)
+    try:
+        yield
+    finally:
+        logging.disable(previous_disabled_level)
 
 
 def _basic_pitch_event_to_midi_note(event: object) -> MidiNote:

@@ -35,6 +35,8 @@ def test_visualize_creates_basic_pitch_html_heatmap_and_midi_assets_by_default(t
     assert "id=\"tooltip\"" in html
     assert "id=\"cursorReadout\"" in html
     assert "id=\"noteInspector\"" in html
+    assert "id=\"audioFileInput\"" in html
+    assert "id=\"waveformCanvas\"" in html
     assert "function noteAtPoint" in html
     assert "cursor activation" in html
     assert "peak heatmap activation" in html
@@ -48,6 +50,9 @@ def test_visualize_creates_basic_pitch_html_heatmap_and_midi_assets_by_default(t
     assert "function extractNotesFromHeatmap" in html
     assert "function groupNotesByOnset" in html
     assert "function drawSequenceOverview" in html
+    assert "function drawWaveformFromBuffer" in html
+    assert "decodeAndDrawWaveform" in html
+    assert "Select another audio file for preview" in html
     assert r"return lines.join('\n');" in html
     assert "Reset extracted notes" in html
     heatmap = json.loads((out_dir / "heatmap.json").read_text(encoding="utf-8"))

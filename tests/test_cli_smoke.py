@@ -20,6 +20,8 @@ def test_notegrabber_help_lists_analyze_command() -> None:
     assert result.returncode == 0, f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
     assert "analyze" in combined_output
     assert "visualize" in combined_output
+    assert "serve" in combined_output
+    assert "gui" in combined_output
 
 
 @pytest.mark.cli
@@ -40,6 +42,38 @@ def test_analyze_help_documents_input_and_output_arguments() -> None:
     assert "--frame-threshold" in combined_output
     assert "--min-duration" in combined_output
     assert any(term in combined_output for term in ("input", "audio", "wav"))
+
+
+@pytest.mark.cli
+@pytest.mark.tier0
+def test_gui_help_documents_standalone_options() -> None:
+    command = [*notegrabber_command(), "gui", "--help"]
+
+    result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+
+    combined_output = f"{result.stdout}\n{result.stderr}".lower()
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
+    assert "basic-pitch" in combined_output
+    assert "--backend" in combined_output
+    assert "--no-render-midi" in combined_output
+    assert "standalone" in combined_output
+
+
+@pytest.mark.cli
+@pytest.mark.tier0
+def test_serve_help_documents_local_upload_options() -> None:
+    command = [*notegrabber_command(), "serve", "--help"]
+
+    result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+
+    combined_output = f"{result.stdout}\n{result.stderr}".lower()
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
+    assert "--out-dir" in combined_output
+    assert "--host" in combined_output
+    assert "--port" in combined_output
+    assert "--no-render-midi" in combined_output
+    assert "basic-pitch" in combined_output
+    assert "upload" in combined_output
 
 
 @pytest.mark.cli

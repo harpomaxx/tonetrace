@@ -13,6 +13,7 @@ from .analyzer import (
     CQT_THRESHOLD,
     analyze_wav_to_midi,
 )
+from .server import serve_upload_app
 from .visualizer import create_visualization
 
 
@@ -55,6 +56,38 @@ def build_parser() -> argparse.ArgumentParser:
     add_analysis_tuning_arguments(visualize_parser)
     visualize_parser.add_argument("--no-render-midi", action="store_true", help="do not invoke TiMidity++ to render MIDI to WAV")
     visualize_parser.set_defaults(handler=_handle_visualize)
+
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="run a local upload web app that generates fresh viewers",
+        description="Run a local-only HTTP server where selecting an audio file runs notegrabber analysis and opens a fresh viewer.",
+    )
+    serve_parser.add_argument("--host", default="127.0.0.1", help="host/interface to bind (default: 127.0.0.1)")
+    serve_parser.add_argument("--port", type=int, default=8765, help="port to bind (default: 8765)")
+    serve_parser.add_argument("--out-dir", type=Path, default=Path("out/server"), help="directory for uploaded files and generated viewers")
+    serve_parser.add_argument(
+        "--backend",
+        choices=("simple", "cqt", "basic-pitch"),
+        default="basic-pitch",
+        help="default backend selected in the upload form (default: basic-pitch)",
+    )
+    serve_parser.add_argument("--no-render-midi", action="store_true", help="do not render MIDI previews with TiMidity++ for uploaded analyses")
+    serve_parser.set_defaults(handler=_handle_serve)
+
+    gui_parser = subparsers.add_parser(
+        "gui",
+        help="launch the native Qt standalone GUI",
+        description="Launch the native PySide6 standalone app. Install GUI dependencies with `python3 -m pip install -e '.[gui]'`.",
+    )
+    gui_parser.add_argument("audio", nargs="?", type=Path, help="optional audio file to open on startup")
+    gui_parser.add_argument(
+        "--backend",
+        choices=("basic-pitch", "cqt", "simple"),
+        default="basic-pitch",
+        help="initial analysis backend (default: basic-pitch)",
+    )
+    gui_parser.add_argument("--no-render-midi", action="store_true", help="do not render MIDI previews with TiMidity++")
+    gui_parser.set_defaults(handler=_handle_gui)
 
     return parser
 
@@ -118,6 +151,32 @@ def _handle_analyze(args: argparse.Namespace) -> int:
 
     print(f"wrote {output_midi} ({len(notes)} note{'s' if len(notes) != 1 else ''})")
     return 0
+
+
+def _handle_serve(args: argparse.Namespace) -> int:
+    try:
+        serve_upload_app(
+            host=args.host,
+            port=args.port,
+            out_dir=args.out_dir,
+            default_backend=args.backend,
+            render_midi=not args.no_render_midi,
+        )
+    except KeyboardInterrupt:
+        print("notegrabber: upload server stopped")
+    except Exception as exc:
+        print(f"notegrabber: serve failed: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _handle_gui(args: argparse.Namespace) -> int:
+    try:
+        from .gui.app import run_gui
+    except Exception as exc:
+        print(f"notegrabber: GUI startup failed: {exc}", file=sys.stderr)
+        return 1
+    return run_gui(audio=args.audio, backend=args.backend, render_midi=not args.no_render_midi)
 
 
 def _handle_visualize(args: argparse.Namespace) -> int:

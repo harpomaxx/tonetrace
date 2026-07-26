@@ -20,9 +20,20 @@ ml = [
     "librosa>=0.10",
     "basic-pitch[onnx]>=0.4",
 ]
+gui = [
+    "PySide6>=6.7",
+    "pyqtgraph>=0.13",
+]
+standalone = [
+    "librosa>=0.10",
+    "basic-pitch[onnx]>=0.4",
+    "PySide6>=6.7",
+    "pyqtgraph>=0.13",
+]
 
 [project.scripts]
 notegrabber = "notegrabber.cli:main"
+notegrabber-gui = "notegrabber.gui.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/notegrabber"]

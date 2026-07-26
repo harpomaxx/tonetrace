@@ -4,7 +4,7 @@
 
 This repository is a Linux/free-software clone/spike inspired by noteGRABBER-style workflows: analyze an audio sample, visualize pitch salience as a piano-roll heatmap, extract candidate MIDI notes, and let the user compare the original audio with the generated MIDI.
 
-Current scope is **CLI + local web visualization only**. No VST/LV2/CLAP plugin has been implemented yet.
+Current scope is **CLI + local web visualization/server + native standalone GUI app**. No VST/LV2/CLAP plugin has been implemented yet.
 
 ## Current implementation
 
@@ -14,6 +14,8 @@ Python package under `src/notegrabber/`:
 - `analyzer.py` — audio analysis backends and heatmap generation.
 - `midi.py` — minimal Standard MIDI File writer.
 - `visualizer.py` — generates a self-contained browser viewer.
+- `server.py` — local upload/re-analysis web server for generating fresh viewers from selected files; renders MIDI audio previews by default when TiMidity++ is available.
+- `gui/` — PySide6 standalone GUI app with waveform, heatmap/piano-roll, controls, sequence table, background analysis worker, original/MIDI playback, note selection/delete, and MIDI export.
 
 Main commands:
 
@@ -23,6 +25,9 @@ notegrabber analyze input.wav --out output.mid --heatmap heatmap.json --backend 
 notegrabber analyze input.wav --out output.mid --heatmap heatmap.json --backend basic-pitch
 notegrabber visualize input.wav --out-dir viewer-dir
 notegrabber visualize input.wav --out-dir viewer-dir --backend basic-pitch --onset-threshold 0.5 --frame-threshold 0.3 --min-duration 0.05
+notegrabber serve --out-dir out/server
+notegrabber gui
+notegrabber-gui
 ```
 
 Backends:
@@ -39,7 +44,9 @@ The visualization command defaults to Basic Pitch and writes:
 - rendered `analysis.wav` via TiMidity++ when available
 - a copy of the original audio
 
-The browser viewer overlays extracted MIDI rectangles on the heatmap and supports hover/click note inspection, show/hide overlay, horizontal zoom, fit-to-width, and live threshold/min-duration re-extraction from the loaded heatmap. It also includes a **Detected sequence** panel with a whole-phrase piano-roll overview/minimap, onset-grouped note/chord table, clickable rows/blocks that jump playback, and CSV copy for the currently visible/tuned sequence.
+The browser viewer overlays extracted MIDI rectangles on the heatmap and supports hover/click note inspection, show/hide overlay, horizontal zoom, fit-to-width, and live threshold/min-duration re-extraction from the loaded heatmap. It also includes a **Detected sequence** panel with a whole-phrase piano-roll overview/minimap, onset-grouped note/chord table, clickable rows/blocks that jump playback, and CSV copy for the currently visible/tuned sequence. The original-audio panel includes a browser file picker and waveform/signal canvas; in static viewers, selected files update playback and waveform preview only, while analysis/heatmap data still comes from the generated viewer artifacts. To select a file and generate new MIDI/heatmap/notes from the browser, use `notegrabber serve` and upload through the local web app. For very large files, the viewer compresses the heatmap canvas horizontally to stay within browser canvas limits; generated HTML/JSON can still be large.
+
+The native GUI is launched with `notegrabber-gui` or `notegrabber gui`. It implements standalone GUI milestones 0–4 in basic form: open an audio file, draw waveform, analyze in a background worker, show heatmap/MIDI rectangles, show a grouped sequence table, retune CQT thresholds in memory, compare original vs rendered MIDI playback, edit/delete selected notes, and export current notes to MIDI. Clicking the waveform, piano roll, or sequence rows seeks both players and updates the playhead. Clicking a note rectangle selects/highlights it; the inspector edits start, duration, pitch, and velocity; dragging a note body moves time/pitch; dragging note edges resizes boundaries; Delete/Backspace or the delete button removes it from the tuned note list used for export. Inspector edits, deletes, CQT retunes, and committed piano-roll drags re-render the MIDI WAV preview when rendering is enabled, so playback reflects edited notes. Editing polish such as visible handles/cursors and undo/redo is still future work.
 
 Tuning flags available on both `analyze` and `visualize`:
 
@@ -54,7 +61,7 @@ Install dev dependencies:
 
 ```bash
 python3 -m pip install -r requirements-dev.txt
-python3 -m pip install -e '.[ml]'
+python3 -m pip install -e '.[standalone]'
 ```
 
 Run tests:
@@ -63,7 +70,14 @@ Run tests:
 NOTEGRABBER_BIN=notegrabber python3 -m pytest -q
 ```
 
-Current expected result: **16 passed**.
+Current expected result: **33 passed** when optional ML and PySide6 GUI dependencies are installed.
+
+Quick GUI manual check:
+
+```bash
+notegrabber-gui oxi.wav
+# Click Analyze, then test Play both, piano-roll note selection/drag/resize/delete, inspector edits, and Export MIDI.
+```
 
 Incremental markers:
 
@@ -75,6 +89,7 @@ python3 -m pytest -m tier3
 python3 -m pytest -m heatmap
 python3 -m pytest -m cqt
 python3 -m pytest -m basic_pitch
+python3 -m pytest -m gui
 ```
 
 ## Local sample
@@ -91,10 +106,14 @@ These are working artifacts, not core source code.
 - Treat `.pi-subagents/` as agent/runtime artifacts, not project source.
 - CQT extraction is still heuristic. Basic Pitch is currently the best default backend for real samples.
 - If editing `visualizer.py`, regenerate `out/oxi-viewer/index.html` for manual checks and run a JavaScript syntax check on the extracted script when possible (for example with `node --check`) because the viewer is generated as an embedded script string.
+- If editing `src/notegrabber/gui/`, run `python3 -m compileall -q src tests` and `NOTEGRABBER_BIN=notegrabber python3 -m pytest -q`; when PySide6 is installed, offscreen GUI smoke tests should run.
 
 ## Recommended next steps
 
-1. Add export of browser-tuned notes back to MIDI (the viewer currently retunes overlays/tables in-browser but does not rewrite MIDI).
-2. Add explicit compare mode for CQT vs Basic Pitch outputs on one page.
-3. Add tolerant regression fixtures/metrics for real samples if legally/shareably possible.
-4. Later, move toward a native Linux standalone/plugin implementation using JUCE/DPF/iPlug2/NIH-plug.
+1. Add editing polish: visible piano-roll resize handles/cursors, keyboard nudging, and undo/redo.
+2. Move edited MIDI-preview rendering off the GUI thread if TiMidity rendering becomes noticeably slow.
+3. Add richer GUI playback polish: volume controls and error display for Qt audio backend failures.
+4. Add export of browser-tuned notes back to MIDI or focus that effort in the native GUI.
+5. Add explicit compare mode for CQT vs Basic Pitch outputs on one page.
+6. Add tolerant regression fixtures/metrics for real samples if legally/shareably possible.
+7. Later, move toward plugin implementation using JUCE/DPF/iPlug2/NIH-plug.

@@ -1,0 +1,531 @@
+"""Main window for the native notegrabber standalone GUI."""
+
+from __future__ import annotations
+
+import tempfile
+import wave
+from pathlib import Path
+
+from PySide6.QtCore import QThread, Qt, QUrl
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtWidgets import (
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
+
+from notegrabber.analyzer import BackendName
+from notegrabber.midi import write_midi
+from notegrabber.visualizer import render_midi_to_wav
+
+from .analysis_worker import AnalysisRequest, AnalysisResult, AnalysisWorker
+from .state import GuiMidiNote, ProjectState, delete_gui_note, gui_notes_to_midi, retune_notes_from_heatmap, update_gui_note
+from .widgets.controls import AnalysisControls
+from .widgets.piano_roll import PianoRollWidget
+from .widgets.sequence import SequenceWidget
+from .widgets.transport import TransportWidget
+from .widgets.waveform import WaveformWidget
+
+
+class MainWindow(QMainWindow):
+    """NeuralNote-inspired standalone app shell."""
+
+    def __init__(self, *, initial_backend: BackendName = "basic-pitch", render_midi: bool = True) -> None:
+        super().__init__()
+        self.state = ProjectState(backend=initial_backend)
+        self.render_midi = render_midi
+        self.analysis_thread: QThread | None = None
+        self.analysis_worker: AnalysisWorker | None = None
+        self.selected_note_index: int | None = None
+
+        self.setWindowTitle("notegrabber")
+        self.resize(1280, 820)
+        self.controls = AnalysisControls()
+        self.controls.backend_combo.setCurrentText(initial_backend)
+        self.waveform = WaveformWidget()
+        self.piano_roll = PianoRollWidget()
+        self.sequence = SequenceWidget()
+        self.transport = TransportWidget()
+        self.file_label = QLabel("No audio loaded")
+        self.selected_note_label = QLabel("Selected note: none")
+        self.note_start_spin = self._seconds_spin()
+        self.note_duration_spin = self._seconds_spin(minimum=0.001)
+        self.note_pitch_spin = QSpinBox()
+        self.note_pitch_spin.setRange(0, 127)
+        self.note_velocity_spin = QSpinBox()
+        self.note_velocity_spin.setRange(1, 127)
+        self.apply_note_button = QPushButton("Apply note edit")
+        self.original_audio = QAudioOutput(self)
+        self.midi_audio = QAudioOutput(self)
+        self.original_player = QMediaPlayer(self)
+        self.midi_player = QMediaPlayer(self)
+        self.original_player.setAudioOutput(self.original_audio)
+        self.midi_player.setAudioOutput(self.midi_audio)
+        self.original_audio.setVolume(0.85)
+        self.midi_audio.setVolume(0.85)
+        self.file_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.selected_note_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._set_note_inspector_enabled(False)
+
+        self._build_layout()
+        self._connect_signals()
+        self._apply_style()
+
+    def load_audio(self, path: Path) -> None:
+        """Load an audio file into the GUI without analyzing it yet."""
+
+        path = path.expanduser().resolve()
+        if not path.exists() or not path.is_file():
+            QMessageBox.warning(self, "Audio not found", f"Cannot open audio file:\n{path}")
+            return
+        self.state.audio_path = path
+        self.state.rendered_midi_wav = None
+        self.state.heatmap = None
+        self.state.extracted_notes = []
+        self.state.tuned_notes = None
+        self._select_note(None)
+        self.piano_roll.set_data(None, [])
+        self.sequence.set_notes([])
+        self.controls.set_can_export(False)
+        self.file_label.setText(f"{path.name} — {path}")
+        self.original_player.setSource(QUrl.fromLocalFile(str(path)))
+        self.midi_player.setSource(QUrl())
+        try:
+            self.waveform.load_audio(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Waveform error", f"Audio loaded, but waveform preview failed:\n{exc}")
+        self.transport.set_status("Audio loaded. Click Analyze.")
+        self.transport.set_playback_available(original=True, midi=False)
+
+    def _seconds_spin(self, *, minimum: float = 0.0) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(minimum, 36_000.0)
+        spin.setDecimals(3)
+        spin.setSingleStep(0.01)
+        spin.setSuffix(" s")
+        spin.setKeyboardTracking(False)
+        return spin
+
+    def _build_note_inspector(self) -> QGroupBox:
+        group = QGroupBox("Selected note inspector")
+        form = QFormLayout(group)
+        form.addRow("Start", self.note_start_spin)
+        form.addRow("Duration", self.note_duration_spin)
+        form.addRow("Pitch", self.note_pitch_spin)
+        form.addRow("Velocity", self.note_velocity_spin)
+        form.addRow(self.apply_note_button)
+        return group
+
+    def _build_layout(self) -> None:
+        top = QWidget()
+        top_layout = QVBoxLayout(top)
+        top_layout.addWidget(self.transport)
+        top_layout.addWidget(self.file_label)
+        top_layout.addWidget(self.waveform)
+
+        piano_scroll = QScrollArea()
+        piano_scroll.setWidgetResizable(True)
+        piano_scroll.setWidget(self.piano_roll)
+
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.addWidget(top)
+        right_layout.addWidget(QLabel("Heatmap + MIDI note map"))
+        right_layout.addWidget(piano_scroll, 4)
+        right_layout.addWidget(self.selected_note_label)
+        right_layout.addWidget(self._build_note_inspector())
+        right_layout.addWidget(QLabel("Detected sequence"))
+        right_layout.addWidget(self.sequence, 1)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self.controls)
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([280, 1000])
+        self.setCentralWidget(splitter)
+        self.statusBar().showMessage("Ready")
+
+    def _connect_signals(self) -> None:
+        self.controls.open_requested.connect(self._open_audio_dialog)
+        self.controls.analyze_requested.connect(self._start_analysis)
+        self.controls.export_requested.connect(self._export_midi_dialog)
+        self.controls.delete_requested.connect(self._delete_selected_note)
+        self.controls.retune_requested.connect(self._retune_from_controls)
+        self.controls.overlay_toggled.connect(self.piano_roll.set_show_notes)
+        self.transport.play_both_requested.connect(self._play_both)
+        self.transport.play_original_requested.connect(self._play_original)
+        self.transport.play_midi_requested.connect(self._play_midi)
+        self.transport.pause_requested.connect(self._pause_playback)
+        self.transport.stop_requested.connect(self._stop_playback)
+        self.original_player.positionChanged.connect(self._playback_position_changed)
+        self.midi_player.positionChanged.connect(self._midi_position_changed)
+        self.waveform.seek_requested.connect(self._seek_seconds)
+        self.piano_roll.seek_requested.connect(self._seek_seconds)
+        self.piano_roll.note_selected.connect(self._select_note)
+        self.piano_roll.note_edited.connect(self._edit_note_from_piano_roll)
+        self.sequence.seek_requested.connect(self._seek_seconds)
+        self.apply_note_button.clicked.connect(self._apply_selected_note_edit)
+
+    def _open_audio_dialog(self) -> None:
+        path, _filter = QFileDialog.getOpenFileName(
+            self,
+            "Open audio",
+            str(Path.home()),
+            "Audio files (*.wav *.wave *.mp3 *.flac *.ogg *.aiff *.aif);;All files (*)",
+        )
+        if path:
+            self.load_audio(Path(path))
+
+    def _start_analysis(self) -> None:
+        if self.state.audio_path is None:
+            QMessageBox.information(self, "Open audio", "Open an audio file before analyzing.")
+            return
+        if self.analysis_thread is not None:
+            return
+
+        backend: BackendName = self.controls.backend()  # type: ignore[assignment]
+        self.state.backend = backend
+        self.state.threshold = self.controls.threshold()
+        self.state.onset_threshold = self.controls.onset_threshold()
+        self.state.frame_threshold = self.controls.frame_threshold()
+        self.state.min_duration = self.controls.min_duration_seconds()
+
+        request = AnalysisRequest(
+            audio_path=self.state.audio_path,
+            backend=backend,
+            render_midi=self.render_midi,
+            threshold=self.state.threshold,
+            onset_threshold=self.state.onset_threshold,
+            frame_threshold=self.state.frame_threshold,
+            min_duration_seconds=self.state.min_duration,
+        )
+        self.analysis_thread = QThread(self)
+        self.analysis_worker = AnalysisWorker(request)
+        self.analysis_worker.moveToThread(self.analysis_thread)
+        self.analysis_thread.started.connect(self.analysis_worker.run)
+        self.analysis_worker.progress.connect(self._set_status)
+        self.analysis_worker.finished.connect(self._analysis_finished)
+        self.analysis_worker.failed.connect(self._analysis_failed)
+        self.analysis_worker.finished.connect(self.analysis_thread.quit)
+        self.analysis_worker.failed.connect(self.analysis_thread.quit)
+        self.analysis_thread.finished.connect(self._analysis_thread_finished)
+        self.controls.set_busy(True)
+        self._set_status(f"Analyzing with {backend}…")
+        self.analysis_thread.start()
+
+    def _analysis_finished(self, result: AnalysisResult) -> None:
+        self.state.audio_path = result.audio_path
+        self.state.backend = result.backend
+        self.state.rendered_midi_wav = result.rendered_midi_wav
+        self.state.heatmap = result.heatmap
+        self.state.extracted_notes = result.notes
+        self.state.tuned_notes = None
+        self._select_note(None)
+        self._set_display_notes(result.notes)
+        if result.rendered_midi_wav is not None:
+            self.midi_player.setSource(QUrl.fromLocalFile(str(result.rendered_midi_wav)))
+        else:
+            self.midi_player.setSource(QUrl())
+        self.transport.set_playback_available(original=True, midi=result.rendered_midi_wav is not None)
+        message = f"Analyzed {len(result.notes)} notes with {result.backend}."
+        if result.render_error:
+            message += f" MIDI preview unavailable: {result.render_error}"
+        self._set_status(message)
+
+    def _analysis_failed(self, message: str) -> None:
+        QMessageBox.critical(self, "Analysis failed", message)
+        self._set_status(f"Analysis failed: {message}")
+
+    def _analysis_thread_finished(self) -> None:
+        self.controls.set_busy(False)
+        if self.analysis_worker is not None:
+            self.analysis_worker.deleteLater()
+        if self.analysis_thread is not None:
+            self.analysis_thread.deleteLater()
+        self.analysis_worker = None
+        self.analysis_thread = None
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self._delete_selected_note()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _retune_from_controls(self) -> None:
+        if self.state.heatmap is None:
+            return
+        self.state.threshold = self.controls.threshold()
+        self.state.min_duration = self.controls.min_duration_seconds()
+        if self.state.heatmap.backend == "cqt":
+            tuned = retune_notes_from_heatmap(
+                self.state.heatmap,
+                threshold=self.state.threshold,
+                min_duration_seconds=self.state.min_duration,
+            )
+            self.state.tuned_notes = tuned
+            self._select_note(None)
+            self._set_display_notes(tuned)
+            self.controls.set_can_export(True)
+            preview_status = self._refresh_midi_preview(tuned)
+            self._set_status(f"Retuned CQT notes in memory: {len(tuned)} notes. Export writes tuned notes.{preview_status}")
+        elif self.state.heatmap.backend == "basic-pitch":
+            self._set_status("Basic Pitch threshold changes require Analyze to rerun the ML model for now.")
+
+    def _set_display_notes(self, notes: list[GuiMidiNote]) -> None:
+        self.piano_roll.set_data(self.state.heatmap, notes)
+        self.sequence.set_notes(notes)
+        self.controls.set_can_export(self.state.heatmap is not None)
+
+    def _select_note(self, index: int | None, _seek_seconds: float | None = None) -> None:
+        notes = self.state.current_notes
+        self.selected_note_index = index if index is not None and 0 <= index < len(notes) else None
+        self.piano_roll.set_selected_note_index(self.selected_note_index)
+        self.controls.set_can_delete(self.selected_note_index is not None)
+        self._set_note_inspector_enabled(self.selected_note_index is not None)
+        if self.selected_note_index is None:
+            self.selected_note_label.setText("Selected note: none")
+            return
+        note = notes[self.selected_note_index]
+        self._populate_note_inspector(note)
+        self.selected_note_label.setText(self._note_summary(note))
+
+    def _delete_selected_note(self) -> None:
+        if self.selected_note_index is None:
+            return
+        current = list(self.state.current_notes)
+        deleted = current[self.selected_note_index]
+        self.state.tuned_notes = delete_gui_note(current, self.selected_note_index)
+        self._select_note(None)
+        self._set_display_notes(self.state.tuned_notes)
+        preview_status = self._refresh_midi_preview(self.state.tuned_notes)
+        self._set_status(f"Deleted MIDI {deleted.pitch}. Export writes {len(self.state.tuned_notes)} edited notes.{preview_status}")
+
+    def _apply_selected_note_edit(self) -> None:
+        if self.selected_note_index is None:
+            return
+        self._edit_note(
+            self.selected_note_index,
+            start_seconds=self.note_start_spin.value(),
+            duration_seconds=self.note_duration_spin.value(),
+            pitch=self.note_pitch_spin.value(),
+            velocity=self.note_velocity_spin.value(),
+            status_prefix="Edited selected note",
+            update_preview=True,
+        )
+
+    def _edit_note_from_piano_roll(
+        self,
+        index: int,
+        start_seconds: float,
+        duration_seconds: float,
+        pitch: int,
+        velocity: int,
+        committed: bool = True,
+    ) -> None:
+        self._edit_note(
+            index,
+            start_seconds=start_seconds,
+            duration_seconds=duration_seconds,
+            pitch=pitch,
+            velocity=velocity,
+            status_prefix="Moved/resized selected note",
+            update_preview=committed,
+        )
+
+    def _edit_note(
+        self,
+        index: int,
+        *,
+        start_seconds: float,
+        duration_seconds: float,
+        pitch: int,
+        velocity: int,
+        status_prefix: str,
+        update_preview: bool,
+    ) -> None:
+        current = list(self.state.current_notes)
+        if index < 0 or index >= len(current):
+            return
+        self.state.tuned_notes = update_gui_note(
+            current,
+            index,
+            start_seconds=start_seconds,
+            duration_seconds=duration_seconds,
+            pitch=pitch,
+            velocity=velocity,
+        )
+        self.selected_note_index = index
+        self._set_display_notes(self.state.tuned_notes)
+        self._select_note(index)
+        if update_preview:
+            preview_status = self._refresh_midi_preview(self.state.tuned_notes)
+            self._set_status(f"{status_prefix}. Export writes {len(self.state.tuned_notes)} edited notes.{preview_status}")
+        else:
+            self._set_status(f"Editing selected note… release to update MIDI preview. Export writes {len(self.state.tuned_notes)} edited notes.")
+
+    def _refresh_midi_preview(self, notes: list[GuiMidiNote]) -> str:
+        if not self.render_midi:
+            return " MIDI preview rendering disabled."
+        preview_dir = Path(tempfile.mkdtemp(prefix="notegrabber-gui-edit-"))
+        midi_path = preview_dir / "edited.mid"
+        wav_path = preview_dir / "edited.wav"
+        try:
+            write_midi(midi_path, gui_notes_to_midi(notes))
+            if notes:
+                rendered_path, render_error = render_midi_to_wav(midi_path, wav_path)
+            else:
+                self._write_silent_wav(wav_path)
+                rendered_path, render_error = wav_path, None
+        except Exception as exc:
+            self.state.rendered_midi_wav = None
+            self.midi_player.setSource(QUrl())
+            self.transport.set_playback_available(original=self.state.audio_path is not None, midi=False)
+            return f" MIDI preview unavailable: {exc}"
+        if rendered_path is None:
+            self.state.rendered_midi_wav = None
+            self.midi_player.setSource(QUrl())
+            self.transport.set_playback_available(original=self.state.audio_path is not None, midi=False)
+            return f" MIDI preview unavailable: {render_error or 'unknown render error'}"
+        previous_position = self.midi_player.position()
+        self.state.rendered_midi_wav = rendered_path
+        self.midi_player.setSource(QUrl.fromLocalFile(str(rendered_path)))
+        if previous_position > 0:
+            self.midi_player.setPosition(previous_position)
+        self.transport.set_playback_available(original=self.state.audio_path is not None, midi=True)
+        return " MIDI preview re-rendered."
+
+    def _write_silent_wav(self, path: Path) -> None:
+        """Write a silent WAV preview for an intentionally empty edited note list."""
+
+        sample_rate = 44_100
+        duration = max(1.0, self.waveform.duration_seconds())
+        frame_count = max(1, round(duration * sample_rate))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(path), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(sample_rate)
+            output.writeframes(b"\x00\x00" * frame_count)
+
+    def _set_note_inspector_enabled(self, enabled: bool) -> None:
+        for widget in (
+            self.note_start_spin,
+            self.note_duration_spin,
+            self.note_pitch_spin,
+            self.note_velocity_spin,
+            self.apply_note_button,
+        ):
+            widget.setEnabled(enabled)
+
+    def _populate_note_inspector(self, note: GuiMidiNote) -> None:
+        self.note_start_spin.setValue(note.start_seconds)
+        self.note_duration_spin.setValue(note.duration_seconds)
+        self.note_pitch_spin.setValue(note.pitch)
+        self.note_velocity_spin.setValue(note.velocity)
+
+    @staticmethod
+    def _note_summary(note: GuiMidiNote) -> str:
+        return (
+            f"Selected note: MIDI {note.pitch}  start {note.start_seconds:.3f}s  "
+            f"duration {note.duration_seconds:.3f}s  velocity {note.velocity}"
+        )
+
+    def _seek_seconds(self, seconds: float) -> None:
+        milliseconds = max(0, round(seconds * 1000))
+        self.original_player.setPosition(milliseconds)
+        if self.state.rendered_midi_wav is not None:
+            self.midi_player.setPosition(milliseconds)
+        self._set_playhead(seconds)
+
+    def _play_both(self) -> None:
+        if self.state.audio_path is None or self.state.rendered_midi_wav is None:
+            return
+        position = self.original_player.position()
+        self.midi_player.setPosition(position)
+        self.original_player.play()
+        self.midi_player.play()
+        self._set_status("Playing original + rendered MIDI")
+
+    def _play_original(self) -> None:
+        if self.state.audio_path is None:
+            return
+        self.original_player.play()
+        self._set_status("Playing original audio")
+
+    def _play_midi(self) -> None:
+        if self.state.rendered_midi_wav is None:
+            return
+        self.midi_player.setPosition(self.original_player.position())
+        self.midi_player.play()
+        self._set_status("Playing rendered MIDI")
+
+    def _pause_playback(self) -> None:
+        self.original_player.pause()
+        self.midi_player.pause()
+        self._set_status("Playback paused")
+
+    def _stop_playback(self) -> None:
+        self.original_player.stop()
+        self.midi_player.stop()
+        self._set_playhead(0.0)
+        self._set_status("Playback stopped")
+
+    def _playback_position_changed(self, milliseconds: int) -> None:
+        self._set_playhead(milliseconds / 1000.0)
+
+    def _midi_position_changed(self, milliseconds: int) -> None:
+        if self.original_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+            self._set_playhead(milliseconds / 1000.0)
+
+    def _set_playhead(self, seconds: float) -> None:
+        self.waveform.set_playhead(seconds)
+        self.piano_roll.set_playhead(seconds)
+
+    def _export_midi_dialog(self) -> None:
+        notes = self.state.current_notes
+        if self.state.heatmap is None:
+            QMessageBox.information(self, "No analysis", "Analyze audio before exporting MIDI.")
+            return
+        path, _filter = QFileDialog.getSaveFileName(self, "Export MIDI", "analysis.mid", "MIDI files (*.mid *.midi);;All files (*)")
+        if not path:
+            return
+        output = Path(path)
+        if output.suffix.lower() not in {".mid", ".midi"}:
+            output = output.with_suffix(".mid")
+        try:
+            write_midi(output, gui_notes_to_midi(notes))
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        self._set_status(f"Exported {len(notes)} notes to {output}")
+
+    def _set_status(self, text: str) -> None:
+        self.transport.set_status(text)
+        self.statusBar().showMessage(text)
+
+    def _apply_style(self) -> None:
+        self.setStyleSheet(
+            """
+            QMainWindow, QWidget { background: #10131d; color: #e8eefc; }
+            QGroupBox { border: 1px solid #33405a; border-radius: 10px; margin-top: 1.1em; padding: 0.65em; background: rgba(28, 34, 50, 0.72); }
+            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; color: #9bdcff; }
+            QPushButton { background: #2f6eea; color: white; border: none; border-radius: 7px; padding: 0.55em 0.8em; }
+            QPushButton:disabled { background: #303747; color: #8791a5; }
+            QPushButton:hover:!disabled { background: #4382ff; }
+            QComboBox, QTableWidget, QScrollArea { background: #161b29; border: 1px solid #33405a; border-radius: 6px; }
+            QSlider::groove:horizontal { height: 6px; background: #2b344a; border-radius: 3px; }
+            QSlider::handle:horizontal { background: #77ddff; width: 16px; margin: -5px 0; border-radius: 8px; }
+            """
+        )

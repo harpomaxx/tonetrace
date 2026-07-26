@@ -127,6 +127,10 @@ def build_html(
   .panel {{ background: #1b1b1b; border: 1px solid #333; border-radius: 0.75rem; padding: 1rem; margin: 1rem 0; }}
   .transport {{ display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }}
   audio {{ width: 100%; }}
+  .file-row {{ display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin: 0.65rem 0; }}
+  input[type="file"] {{ color: #ddd; max-width: 100%; }}
+  .waveform-wrap {{ margin-top: 0.75rem; border: 1px solid #333; border-radius: 0.55rem; overflow: hidden; background: linear-gradient(110deg, #667492 0%, #73819d 45%, #7b8a96 72%, #b8d58e 100%); }}
+  #waveformCanvas {{ display: block; width: 100%; height: 96px; image-rendering: auto; }}
   .viewer {{ position: relative; width: 100%; overflow-x: auto; border: 1px solid #444; background: #050505; }}
   canvas {{ display: block; image-rendering: pixelated; }}
   #overlay {{ position: absolute; left: 0; top: 0; pointer-events: none; }}
@@ -167,6 +171,12 @@ def build_html(
     <div>
       <h2>Original audio</h2>
       <audio id="originalAudio" controls preload="metadata" src="{original_audio_attr}"></audio>
+      <div class="file-row">
+        <label for="audioFileInput">Select another audio file for preview:</label>
+        <input id="audioFileInput" type="file" accept="audio/*,.wav,.mp3,.flac,.ogg,.aiff,.aif">
+      </div>
+      <p id="waveformStatus" class="meta">Waveform shows the currently loaded original-audio preview. Selecting a file changes playback/waveform only; analysis data remains the generated sample until you rerun <code>notegrabber visualize</code>.</p>
+      <div class="waveform-wrap"><canvas id="waveformCanvas" aria-label="Audio waveform preview"></canvas></div>
     </div>
     <div>
       <h2>Rendered MIDI audio</h2>
@@ -256,21 +266,27 @@ const minDurationValue = document.getElementById('minDurationValue');
 const zoomRange = document.getElementById('zoomRange');
 const zoomValue = document.getElementById('zoomValue');
 const showOverlay = document.getElementById('showOverlay');
+const audioFileInput = document.getElementById('audioFileInput');
+const waveformCanvas = document.getElementById('waveformCanvas');
+const waveformStatus = document.getElementById('waveformStatus');
 const ctx = canvas.getContext('2d');
 const octx = overlay.getContext('2d');
+const waveformCtx = waveformCanvas.getContext('2d');
 const overviewCtx = sequenceOverview.getContext('2d');
 const frames = heatmap.frames;
 const midiNotes = heatmap.midi_notes;
-const cellW = 5;
+const baseCellW = 5;
 const cellH = 5;
-const width = Math.max(1, frames.length * cellW);
+const maxHeatmapCanvasWidth = 30000;
+const width = Math.max(1, Math.min(maxHeatmapCanvasWidth, frames.length * baseCellW));
 const height = Math.max(1, midiNotes.length * cellH);
+const xScale = width / Math.max(1, frames.length);
 canvas.width = overlay.width = width;
 canvas.height = overlay.height = height;
 canvas.style.width = overlay.style.width = width + 'px';
 canvas.style.height = overlay.style.height = height + 'px';
 document.getElementById('backend').textContent = heatmap.backend || 'unknown';
-document.getElementById('dims').textContent = `${{frames.length}} frames × ${{midiNotes.length}} notes`;
+document.getElementById('dims').textContent = `${{frames.length}} frames × ${{midiNotes.length}} notes${{frames.length * baseCellW > maxHeatmapCanvasWidth ? ' · compressed for long audio' : ''}}`;
 
 function color(value) {{
   value = Math.max(0, Math.min(1, value));
@@ -294,12 +310,98 @@ function formatSeconds(seconds) {{
   return `${{seconds.toFixed(3)}}s`;
 }}
 
+let lastWaveformBuffer = null;
+
+function resizeWaveformCanvas() {{
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = Math.max(320, waveformCanvas.parentElement.clientWidth || 640);
+  const cssHeight = 96;
+  waveformCanvas.width = Math.round(cssWidth * dpr);
+  waveformCanvas.height = Math.round(cssHeight * dpr);
+  waveformCanvas.style.height = cssHeight + 'px';
+  waveformCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return {{ width: cssWidth, height: cssHeight }};
+}}
+
+function drawWaveformPlaceholder(message) {{
+  const {{ width, height }} = resizeWaveformCanvas();
+  waveformCtx.clearRect(0, 0, width, height);
+  waveformCtx.fillStyle = 'rgba(255,255,255,0.82)';
+  waveformCtx.font = '13px system-ui, sans-serif';
+  waveformCtx.fillText(message, 14, height / 2 + 4);
+}}
+
+function drawWaveformFromBuffer(audioBuffer, label) {{
+  lastWaveformBuffer = audioBuffer;
+  const {{ width, height }} = resizeWaveformCanvas();
+  const channelCount = Math.max(1, audioBuffer.numberOfChannels);
+  const length = audioBuffer.length;
+  const samplesPerPixel = Math.max(1, Math.floor(length / width));
+  const mid = height / 2;
+  const amp = height * 0.42;
+
+  waveformCtx.clearRect(0, 0, width, height);
+  waveformCtx.fillStyle = 'rgba(255,255,255,0.78)';
+  for (let x = 0; x < width; x++) {{
+    const start = x * samplesPerPixel;
+    const end = Math.min(length, start + samplesPerPixel);
+    let min = 1;
+    let max = -1;
+    for (let channel = 0; channel < channelCount; channel++) {{
+      const data = audioBuffer.getChannelData(channel);
+      for (let index = start; index < end; index++) {{
+        const value = data[index] || 0;
+        if (value < min) min = value;
+        if (value > max) max = value;
+      }}
+    }}
+    const y1 = mid - max * amp;
+    const y2 = mid - min * amp;
+    waveformCtx.fillRect(x, y1, 1, Math.max(1, y2 - y1));
+  }}
+  waveformCtx.strokeStyle = 'rgba(255,255,255,0.35)';
+  waveformCtx.beginPath();
+  waveformCtx.moveTo(0, mid);
+  waveformCtx.lineTo(width, mid);
+  waveformCtx.stroke();
+  waveformStatus.innerHTML = `Waveform preview: <strong>${{label}}</strong> · ${{audioBuffer.numberOfChannels}} channel${{audioBuffer.numberOfChannels === 1 ? '' : 's'}} · ${{Math.round(audioBuffer.sampleRate)}} Hz · ${{formatSeconds(audioBuffer.duration)}}`;
+}}
+
+async function decodeAndDrawWaveform(arrayBuffer, label) {{
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) {{
+    drawWaveformPlaceholder('Web Audio decoding is not available in this browser.');
+    return;
+  }}
+  try {{
+    const audioContext = new AudioContextClass();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
+    drawWaveformFromBuffer(audioBuffer, label);
+    await audioContext.close();
+  }} catch (error) {{
+    console.error(error);
+    drawWaveformPlaceholder('Could not decode this audio file for waveform preview.');
+  }}
+}}
+
+async function loadWaveformFromUrl(url, label) {{
+  try {{
+    drawWaveformPlaceholder('Loading waveform…');
+    const response = await fetch(url);
+    const arrayBuffer = await response.arrayBuffer();
+    await decodeAndDrawWaveform(arrayBuffer, label);
+  }} catch (error) {{
+    console.warn('Initial waveform fetch failed; select a file to draw its waveform.', error);
+    drawWaveformPlaceholder('Select an audio file to draw its waveform preview.');
+  }}
+}}
+
 function noteRect(note) {{
   const secondsPerFrame = heatmap.hop_size / heatmap.sample_rate;
   return {{
-    x: note.start_seconds / secondsPerFrame * cellW,
+    x: note.start_seconds / secondsPerFrame * xScale,
     y: noteY(note.pitch),
-    w: Math.max(2, note.duration_seconds / secondsPerFrame * cellW),
+    w: Math.max(2, note.duration_seconds / secondsPerFrame * xScale),
     h: cellH,
   }};
 }}
@@ -314,7 +416,7 @@ function heatmapPoint(event) {{
   const rect = canvas.getBoundingClientRect();
   const x = Math.max(0, Math.min(width - 1, (event.clientX - rect.left) * (canvas.width / rect.width)));
   const y = Math.max(0, Math.min(height - 1, (event.clientY - rect.top) * (canvas.height / rect.height)));
-  const frameIndex = Math.max(0, Math.min(frames.length - 1, Math.floor(x / cellW)));
+  const frameIndex = Math.max(0, Math.min(frames.length - 1, Math.floor(x / xScale)));
   const pitchIndexFromTop = Math.max(0, Math.min(midiNotes.length - 1, Math.floor(y / cellH)));
   const noteIndex = midiNotes.length - 1 - pitchIndexFromTop;
   const pitch = midiNotes[noteIndex];
@@ -356,7 +458,7 @@ function drawHeatmap() {{
     const activations = frames[x].activations;
     for (let i = 0; i < midiNotes.length; i++) {{
       ctx.fillStyle = color(activations[i]);
-      ctx.fillRect(x * cellW, (midiNotes.length - 1 - i) * cellH, cellW, cellH);
+      ctx.fillRect(x * xScale, (midiNotes.length - 1 - i) * cellH, Math.max(1, Math.ceil(xScale)), cellH);
     }}
   }}
 }}
@@ -380,7 +482,7 @@ function drawOverlay(playheadSeconds = null) {{
   }}
   if (playheadSeconds !== null) {{
     const secondsPerFrame = heatmap.hop_size / heatmap.sample_rate;
-    const x = playheadSeconds / secondsPerFrame * cellW;
+    const x = playheadSeconds / secondsPerFrame * xScale;
     octx.strokeStyle = 'rgba(120, 210, 255, 0.95)';
     octx.beginPath();
     octx.moveTo(x, 0);
@@ -662,6 +764,17 @@ viewer.addEventListener('click', (event) => {{
 
 const original = document.getElementById('originalAudio');
 const midiAudio = document.getElementById('midiAudio');
+let selectedAudioObjectUrl = null;
+audioFileInput.addEventListener('change', async () => {{
+  const file = audioFileInput.files && audioFileInput.files[0];
+  if (!file) return;
+  if (selectedAudioObjectUrl) URL.revokeObjectURL(selectedAudioObjectUrl);
+  selectedAudioObjectUrl = URL.createObjectURL(file);
+  original.src = selectedAudioObjectUrl;
+  original.load();
+  drawWaveformPlaceholder('Decoding selected file…');
+  await decodeAndDrawWaveform(await file.arrayBuffer(), file.name);
+}});
 sensitivityRange.addEventListener('input', applyLiveExtraction);
 minDurationRange.addEventListener('input', applyLiveExtraction);
 zoomRange.addEventListener('input', () => setZoom(zoomRange.value));
@@ -690,7 +803,11 @@ document.getElementById('copySequence').addEventListener('click', async () => {{
     sequenceSummary.textContent = 'Clipboard unavailable. Select and copy from developer tools if needed.';
   }}
 }});
-window.addEventListener('resize', () => renderSequence());
+window.addEventListener('resize', () => {{
+  renderSequence();
+  if (lastWaveformBuffer) drawWaveformFromBuffer(lastWaveformBuffer, 'current audio');
+  else drawWaveformPlaceholder('Select an audio file to draw its waveform preview.');
+}});
 document.getElementById('fitWidth').addEventListener('click', () => {{
   const fittedZoom = Math.max(0.5, Math.min(8, viewer.clientWidth / width));
   setZoom(Math.round(fittedZoom * 10) / 10);
@@ -722,6 +839,8 @@ updateNoteCount();
 renderSequence();
 drawHeatmap();
 drawOverlay();
+drawWaveformPlaceholder('Loading waveform…');
+loadWaveformFromUrl(original.getAttribute('src'), original.getAttribute('src'));
 </script>
 </body>
 </html>

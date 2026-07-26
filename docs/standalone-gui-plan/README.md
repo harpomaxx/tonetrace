@@ -1,0 +1,96 @@
+# Standalone Linux GUI plan
+
+This folder collects the design notes for implementing a native Linux standalone `notegrabber` application inspired by the NeuralNote layout while preserving the features already implemented in this repository.
+
+Reference screenshot copied from the user prompt:
+
+![NeuralNote reference](./neuralnote-reference.png)
+
+## Goal
+
+Build a free-software Linux desktop app that feels like a standalone audio-to-MIDI workstation:
+
+- load or drag an audio sample
+- run Basic Pitch by default, with CQT as an alternate visual/fallback backend
+- show waveform, heatmap, MIDI rectangles, piano keyboard, and sequence/minimap
+- provide NeuralNote-like left controls for transcription sensitivity, minimum note duration, pitch bend, quantization, and timing
+- play original audio and rendered MIDI for A/B comparison
+- allow live retuning and export of the tuned MIDI
+
+## Recommendation
+
+Use **PySide6 + Qt Widgets + QGraphicsView/custom QWidget painting** for the first standalone Linux app.
+
+Why:
+
+- the codebase is already Python and can reuse `analyzer.py`, `midi.py`, and existing Basic Pitch/CQT dependencies directly
+- Qt provides mature Linux file dialogs, menus, sliders, dials, splitters, scroll areas, audio playback, and packaging paths
+- `QGraphicsView`/custom painting maps naturally to waveform, heatmap, piano roll rectangles, minimap, and selection overlays
+- this avoids a rewrite into C++/JUCE before the UX is validated
+
+Alternative if speed of implementation matters more than native widgets: wrap the current HTML viewer with `pywebview` or Tauri and call the existing local server. This reuses the most UI code, but makes deep MIDI editing/export less clean than a native model-view architecture.
+
+## Files in this folder
+
+- [`ui-spec.md`](./ui-spec.md) — NeuralNote-inspired layout and feature mapping.
+- [`research-notes.md`](./research-notes.md) — toolkit/library examples and links found during web research.
+- [`implementation-plan.md`](./implementation-plan.md) — phased implementation plan for the standalone app.
+- [`neuralnote-reference.png`](./neuralnote-reference.png) — local copy of the screenshot supplied by the user.
+
+## Current implementation status
+
+The first native standalone implementation now lives under `src/notegrabber/gui/` and is exposed as:
+
+```bash
+notegrabber-gui
+notegrabber gui
+```
+
+Implemented in the GUI:
+
+- Basic Pitch default backend with CQT/simple alternatives
+- Qt file dialog/open-on-startup audio loading
+- waveform preview with click-to-seek playhead
+- background analysis worker using existing Python backends
+- heatmap/piano-roll widget with MIDI note overlay and keyboard axis
+- NeuralNote-inspired left controls for backend, note sensitivity, split sensitivity, CQT threshold, and minimum duration
+- original audio and rendered MIDI WAV playback through Qt Multimedia
+- Play both / Original / MIDI / Pause / Stop transport controls
+- seeking both players from waveform, piano roll, or sequence table
+- detected sequence table grouped by onset/chords
+- MIDI rectangle selection/highlighting with selected-note details
+- Delete/Backspace/delete button removes selected notes from the tuned list
+- selected-note inspector editing for start, duration, pitch, and velocity
+- piano-roll drag editing for moving notes and resizing note boundaries
+- MIDI WAV preview re-rendering after inspector edits, deletes, CQT retunes, and committed piano-roll drags when rendering is enabled
+- export current analyzed/tuned/edited/deleted note list to MIDI
+
+Still pending:
+
+- visual drag handles/cursors/ghost-preview polish
+- undo/redo for edits
+- off-main-thread/debounced MIDI preview rendering if synchronous TiMidity++ rendering becomes slow
+- polished custom knob styling
+- native minimap/CSV copy parity with the browser viewer
+- richer Qt audio error/volume UI
+
+## Current project features to carry over/keep aligned
+
+- `basic-pitch` backend as default for real samples
+- `cqt` backend for music-aligned heatmap/fallback
+- heatmap JSON model and GUI model conversion in `gui/state.py`
+- MIDI note extraction and writer
+- static/local-server viewer feature set
+- waveform preview
+- live threshold/min-duration retuning
+- sequence/minimap/table concepts
+- CSV copy in browser viewer; native GUI parity later
+- original vs rendered MIDI playback
+
+## Non-goals for first standalone milestone
+
+- VST/LV2/CLAP plugin
+- full DAW piano-roll editing parity
+- realtime audio capture from DAW
+- cloud upload or online services
+- exact NeuralNote visual clone/branding
