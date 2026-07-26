@@ -6,7 +6,7 @@ import tempfile
 import wave
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt, QUrl
+from PySide6.QtCore import QThread, QTimer, Qt, QUrl
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QVBoxLayout,
@@ -51,6 +52,9 @@ class MainWindow(QMainWindow):
         self.waveform_runs: list[tuple[QThread, WaveformWorker]] = []
         self.overview_runs: list[tuple[QThread, OverviewWorker]] = []
         self.selected_note_index: int | None = None
+        self.playback_mode = "stopped"
+        self.playback_timer = QTimer(self)
+        self.playback_timer.setInterval(50)
 
         self.setWindowTitle("ToneTrace")
         self.resize(1280, 820)
@@ -101,6 +105,9 @@ class MainWindow(QMainWindow):
         self.state.heatmap = None
         self.state.extracted_notes = []
         self.state.tuned_notes = None
+        self.state.analysis_start_seconds = 0.0
+        self.state.analysis_duration_seconds = None
+        self.state.midi_preview_offset_seconds = 0.0
         self._select_note(None)
         self.waveform.set_selection(None, None)
         self.waveform.set_pitch_overview(None)
@@ -167,9 +174,11 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self.file_label)
         top_layout.addWidget(self.waveform)
 
-        piano_scroll = QScrollArea()
-        piano_scroll.setWidgetResizable(True)
-        piano_scroll.setWidget(self.piano_roll)
+        self.piano_scroll = QScrollArea()
+        self.piano_scroll.setWidgetResizable(True)
+        self.piano_scroll.setWidget(self.piano_roll)
+        self.piano_scroll.setMinimumHeight(240)
+        self.piano_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
@@ -177,9 +186,10 @@ class MainWindow(QMainWindow):
         right_layout.setSpacing(10)
         right_layout.addWidget(top)
         right_layout.addWidget(self._section_label("Heatmap + MIDI note map"))
-        right_layout.addWidget(piano_scroll, 4)
+        right_layout.addWidget(self.piano_scroll, 2)
         right_layout.addWidget(self._build_note_inspector())
         right_layout.addWidget(self._section_label("Detected sequence"))
+        self.sequence.setMinimumHeight(150)
         right_layout.addWidget(self.sequence, 1)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -189,6 +199,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([280, 1000])
         self.setCentralWidget(splitter)
+        self._update_heatmap_view_height()
         self.statusBar().showMessage("Ready")
 
     @staticmethod
@@ -204,8 +215,6 @@ class MainWindow(QMainWindow):
         self.controls.delete_requested.connect(self._delete_selected_note)
         self.controls.retune_requested.connect(self._retune_from_controls)
         self.controls.overlay_toggled.connect(self.piano_roll.set_show_notes)
-        self.controls.zoom_changed.connect(self.piano_roll.set_horizontal_zoom)
-        self.piano_roll.zoom_changed.connect(self.controls.set_zoom_factor)
         self.transport.play_both_requested.connect(self._play_both)
         self.transport.play_original_requested.connect(self._play_original)
         self.transport.play_midi_requested.connect(self._play_midi)
@@ -213,6 +222,9 @@ class MainWindow(QMainWindow):
         self.transport.stop_requested.connect(self._stop_playback)
         self.original_player.positionChanged.connect(self._playback_position_changed)
         self.midi_player.positionChanged.connect(self._midi_position_changed)
+        self.original_player.playbackStateChanged.connect(self._playback_state_changed)
+        self.midi_player.playbackStateChanged.connect(self._playback_state_changed)
+        self.playback_timer.timeout.connect(self._sync_playback_tick)
         self.waveform.seek_requested.connect(self._seek_seconds)
         self.waveform.range_selected.connect(self._set_analysis_range_from_waveform)
         self.piano_roll.seek_requested.connect(self._seek_seconds)
@@ -357,6 +369,9 @@ class MainWindow(QMainWindow):
         self.state.heatmap = result.heatmap
         self.state.extracted_notes = result.notes
         self.state.tuned_notes = None
+        self.state.analysis_start_seconds = result.analysis_start_seconds
+        self.state.analysis_duration_seconds = result.analysis_duration_seconds
+        self.state.midi_preview_offset_seconds = result.midi_preview_offset_seconds
         self._select_note(None)
         self._set_display_notes(result.notes)
         if result.rendered_midi_wav is not None:
@@ -381,6 +396,14 @@ class MainWindow(QMainWindow):
             self.analysis_thread.deleteLater()
         self.analysis_worker = None
         self.analysis_thread = None
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self._update_heatmap_view_height()
+        super().resizeEvent(event)
+
+    def _update_heatmap_view_height(self) -> None:
+        if hasattr(self, "piano_scroll"):
+            self.piano_scroll.setMaximumHeight(max(260, round(self.height() * 0.48)))
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt API
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
@@ -508,8 +531,9 @@ class MainWindow(QMainWindow):
         midi_path = preview_dir / "edited.mid"
         wav_path = preview_dir / "edited.wav"
         try:
-            write_midi(midi_path, gui_notes_to_midi(notes))
-            if notes:
+            preview_notes = self._notes_for_midi_preview(notes)
+            write_midi(midi_path, gui_notes_to_midi(preview_notes))
+            if preview_notes:
                 rendered_path, render_error = render_midi_to_wav(midi_path, wav_path)
             else:
                 self._write_silent_wav(wav_path)
@@ -524,13 +548,44 @@ class MainWindow(QMainWindow):
             self.midi_player.setSource(QUrl())
             self.transport.set_playback_available(original=self.state.audio_path is not None, midi=False)
             return f" MIDI preview unavailable: {render_error or 'unknown render error'}"
-        previous_position = self.midi_player.position()
+        previous_display_seconds = self._display_seconds_from_midi_position(self.midi_player.position())
         self.state.rendered_midi_wav = rendered_path
+        self.state.midi_preview_offset_seconds = self.state.analysis_start_seconds if self.state.analysis_duration_seconds is not None else 0.0
         self.midi_player.setSource(QUrl.fromLocalFile(str(rendered_path)))
-        if previous_position > 0:
-            self.midi_player.setPosition(previous_position)
+        if previous_display_seconds > 0:
+            self.midi_player.setPosition(self._midi_position_from_display_seconds(previous_display_seconds))
         self.transport.set_playback_available(original=self.state.audio_path is not None, midi=True)
         return " MIDI preview re-rendered."
+
+    def _notes_for_midi_preview(self, notes: list[GuiMidiNote]) -> list[GuiMidiNote]:
+        """Return notes in the local MIDI-preview timeline.
+
+        Exported notes stay in the full-song timeline.  Range previews are
+        rendered locally so a selection starting at e.g. 40s does not produce a
+        MIDI WAV with 40s of leading silence; playback maps local MIDI time back
+        to the full waveform/heatmap timeline.
+        """
+
+        if self.state.analysis_duration_seconds is None:
+            return list(notes)
+        start = self.state.analysis_start_seconds
+        end = start + self.state.analysis_duration_seconds
+        preview_notes: list[GuiMidiNote] = []
+        for note in notes:
+            note_start = max(note.start_seconds, start)
+            note_end = min(note.end_seconds, end)
+            if note_end <= note_start:
+                continue
+            preview_notes.append(
+                GuiMidiNote(
+                    pitch=note.pitch,
+                    start_seconds=note_start - start,
+                    duration_seconds=note_end - note_start,
+                    velocity=note.velocity,
+                    source=note.source,
+                )
+            )
+        return preview_notes
 
     def _write_silent_wav(self, path: Path) -> None:
         """Write a silent WAV preview for an intentionally empty edited note list."""
@@ -578,18 +633,21 @@ class MainWindow(QMainWindow):
         self._set_status(f"Selected range {start_seconds:.2f}s–{start_seconds + duration_seconds:.2f}s ({duration_seconds:.2f}s). Click Analyze.")
 
     def _seek_seconds(self, seconds: float) -> None:
-        milliseconds = max(0, round(seconds * 1000))
-        self.original_player.setPosition(milliseconds)
+        display_seconds = max(0.0, float(seconds))
+        self.original_player.setPosition(self._original_position_from_display_seconds(display_seconds))
         if self.state.rendered_midi_wav is not None:
-            self.midi_player.setPosition(milliseconds)
-        self._set_playhead(seconds)
+            self.midi_player.setPosition(self._midi_position_from_display_seconds(display_seconds))
+        self._set_playhead(display_seconds)
 
     def _play_both(self) -> None:
         if self.state.audio_path is None or self.state.rendered_midi_wav is None:
             return
-        position = self._play_start_position(self.original_player.position(), self.original_player.duration())
-        self.original_player.setPosition(position)
-        self.midi_player.setPosition(position)
+        display_seconds = self._play_start_display_seconds()
+        self.original_player.setPosition(self._original_position_from_display_seconds(display_seconds))
+        self.midi_player.setPosition(self._midi_position_from_display_seconds(display_seconds))
+        self.playback_mode = "both"
+        self._set_playhead(display_seconds)
+        self.playback_timer.start()
         self.original_player.play()
         self.midi_player.play()
         self._set_status("Playing original + rendered MIDI")
@@ -597,18 +655,85 @@ class MainWindow(QMainWindow):
     def _play_original(self) -> None:
         if self.state.audio_path is None:
             return
-        self.original_player.setPosition(self._play_start_position(self.original_player.position(), self.original_player.duration()))
+        display_seconds = self._play_start_display_seconds()
+        self.midi_player.pause()
+        self.original_player.setPosition(self._original_position_from_display_seconds(display_seconds))
+        self.playback_mode = "original"
+        self._set_playhead(display_seconds)
+        self.playback_timer.start()
         self.original_player.play()
         self._set_status("Playing original audio")
 
     def _play_midi(self) -> None:
         if self.state.rendered_midi_wav is None:
             return
-        position = self._play_start_position(self.original_player.position(), self.original_player.duration())
-        self.original_player.setPosition(position)
-        self.midi_player.setPosition(position)
+        display_seconds = self._play_start_display_seconds()
+        self.original_player.pause()
+        self.original_player.setPosition(self._original_position_from_display_seconds(display_seconds))
+        self.midi_player.setPosition(self._midi_position_from_display_seconds(display_seconds))
+        self.playback_mode = "midi"
+        self._set_playhead(display_seconds)
+        self.playback_timer.start()
         self.midi_player.play()
         self._set_status("Playing rendered MIDI")
+
+    def _play_start_display_seconds(self) -> float:
+        current = self._current_display_seconds()
+        range_bounds = self._active_analysis_range()
+        if range_bounds is not None:
+            start, end = range_bounds
+            if current < start or current >= max(start, end - 0.1):
+                return start
+            return current
+        duration = self._shared_duration_ms() / 1000.0
+        if duration > 0 and current >= max(0.0, duration - 0.1):
+            return 0.0
+        return max(0.0, current)
+
+    def _current_display_seconds(self) -> float:
+        if self.playback_mode == "midi":
+            return self._display_seconds_from_midi_position(self.midi_player.position())
+        if self.playback_mode == "both" and self.original_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+            return self._display_seconds_from_midi_position(self.midi_player.position())
+        return self._display_seconds_from_original_position(self.original_player.position())
+
+    def _display_seconds_from_original_position(self, position_ms: int) -> float:
+        return max(0.0, float(position_ms) / 1000.0)
+
+    def _display_seconds_from_midi_position(self, position_ms: int) -> float:
+        seconds = self.state.midi_preview_offset_seconds + max(0.0, float(position_ms) / 1000.0)
+        return self._clamp_to_analysis_range(seconds)
+
+    def _original_position_from_display_seconds(self, seconds: float) -> int:
+        return max(0, round(max(0.0, float(seconds)) * 1000))
+
+    def _midi_position_from_display_seconds(self, seconds: float) -> int:
+        local_seconds = max(0.0, float(seconds) - self.state.midi_preview_offset_seconds)
+        if self.state.analysis_duration_seconds is not None:
+            local_seconds = min(local_seconds, self.state.analysis_duration_seconds)
+        return max(0, round(local_seconds * 1000))
+
+    def _active_analysis_range(self) -> tuple[float, float] | None:
+        if self.state.analysis_duration_seconds is None:
+            return None
+        start = max(0.0, self.state.analysis_start_seconds)
+        return start, start + max(0.0, self.state.analysis_duration_seconds)
+
+    def _clamp_to_analysis_range(self, seconds: float) -> float:
+        bounds = self._active_analysis_range()
+        if bounds is None:
+            return max(0.0, seconds)
+        start, end = bounds
+        return max(start, min(float(seconds), end))
+
+    def _shared_duration_ms(self) -> int:
+        durations = [self.original_player.duration(), round(self.waveform.duration_seconds() * 1000)]
+        if self.state.heatmap is not None:
+            durations.append(round(self.state.heatmap.duration_seconds * 1000))
+        bounds = self._active_analysis_range()
+        if bounds is not None:
+            durations.append(round(bounds[1] * 1000))
+        return max(0, *(duration for duration in durations if duration is not None))
 
     @staticmethod
     def _play_start_position(position_ms: int, duration_ms: int, *, end_tolerance_ms: int = 100) -> int:
@@ -619,26 +744,80 @@ class MainWindow(QMainWindow):
         return max(0, position_ms)
 
     def _pause_playback(self) -> None:
+        display_seconds = self._current_display_seconds()
         self.original_player.pause()
         self.midi_player.pause()
+        self.playback_mode = "paused"
+        self.playback_timer.stop()
+        self._set_playhead(display_seconds)
         self._set_status("Playback paused")
 
     def _stop_playback(self) -> None:
         self.original_player.stop()
         self.midi_player.stop()
+        self.playback_mode = "stopped"
+        self.playback_timer.stop()
         self._set_playhead(0.0)
         self._set_status("Playback stopped")
 
     def _playback_position_changed(self, milliseconds: int) -> None:
-        self._set_playhead(milliseconds / 1000.0)
+        if not self.playback_timer.isActive() and self.playback_mode != "midi":
+            self._set_playhead(self._display_seconds_from_original_position(milliseconds))
 
     def _midi_position_changed(self, milliseconds: int) -> None:
-        if self.original_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
-            self._set_playhead(milliseconds / 1000.0)
+        if not self.playback_timer.isActive() and self.playback_mode == "midi":
+            self._set_playhead(self._display_seconds_from_midi_position(milliseconds))
+
+    def _playback_state_changed(self, _state: QMediaPlayer.PlaybackState) -> None:
+        if self.original_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            if not self.playback_timer.isActive():
+                self.playback_timer.start()
+            return
+        if self.midi_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            if not self.playback_timer.isActive():
+                self.playback_timer.start()
+            return
+        self.playback_timer.stop()
+        self._set_playhead(self._current_display_seconds())
+
+    def _sync_playback_tick(self) -> None:
+        if self.playback_mode == "midi":
+            display_seconds = self._display_seconds_from_midi_position(self.midi_player.position())
+        else:
+            display_seconds = self._display_seconds_from_original_position(self.original_player.position())
+            if self.playback_mode == "both":
+                self._sync_player_position(self.midi_player, self._midi_position_from_display_seconds(display_seconds))
+        if self._stop_if_past_analysis_end(display_seconds):
+            return
+        self._set_playhead(display_seconds)
+
+    def _stop_if_past_analysis_end(self, display_seconds: float) -> bool:
+        bounds = self._active_analysis_range()
+        if bounds is None or self.playback_mode not in {"both", "midi", "original"}:
+            return False
+        _start, end = bounds
+        if display_seconds < end:
+            return False
+        self.original_player.pause()
+        self.midi_player.pause()
+        self.playback_mode = "paused"
+        self.playback_timer.stop()
+        self._set_playhead(end)
+        self._set_status("Reached selected analysis range end")
+        return True
+
+    @staticmethod
+    def _position_needs_sync(reference_ms: int, follower_ms: int, *, tolerance_ms: int = 80) -> bool:
+        return abs(int(reference_ms) - int(follower_ms)) > tolerance_ms
+
+    def _sync_player_position(self, player: QMediaPlayer, reference_ms: int) -> None:
+        if self._position_needs_sync(reference_ms, player.position()):
+            player.setPosition(max(0, reference_ms))
 
     def _set_playhead(self, seconds: float) -> None:
-        self.waveform.set_playhead(seconds)
-        self.piano_roll.set_playhead(seconds)
+        clamped_seconds = max(0.0, min(float(seconds), self._shared_duration_ms() / 1000.0 if self._shared_duration_ms() > 0 else float(seconds)))
+        self.waveform.set_playhead(clamped_seconds)
+        self.piano_roll.set_playhead(clamped_seconds)
 
     def _export_midi_dialog(self) -> None:
         notes = self.state.current_notes

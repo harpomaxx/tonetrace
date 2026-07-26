@@ -264,4 +264,36 @@ The project has advanced beyond the original first implementation target. Curren
 - committed edits/deletes/CQT retunes re-render the MIDI WAV preview when rendering is enabled.
 - Export MIDI writes current analyzed/tuned/edited/deleted notes.
 
-Next implementation target: add editing polish such as keyboard nudging, undo/redo, optional ghost previews during drag, debounced/background MIDI-preview rendering if needed, and project/session persistence.
+## Next implementation priorities
+
+The immediate product direction is sampler-oriented: load a song or sample, find a chop/region quickly, analyze that region deeply, then edit/export clean MIDI. Region selection and range analysis are implemented, so the next work should focus on usability and responsiveness rather than adding another transcription backend.
+
+1. **Playback/playhead sync**
+   - Ensure waveform and heatmap playheads remain synchronized during Original, MIDI, and Play both modes. Initial timer-driven sync and range-aware MIDI timeline mapping are implemented.
+   - Make pause/resume and end-of-file behavior predictable: replay from current visible position unless already at the end, then rewind.
+   - Add clearer status/errors when Qt audio backends or rendered MIDI preview are unavailable.
+
+2. **Heatmap zoom/navigation polish**
+   - Vertical pitch zoom is implemented with Shift+wheel for easier note selection; left-panel zoom sliders were removed to reduce control clutter.
+   - Preserve mouse-centered time zoom for Ctrl+wheel instead of only changing scale.
+   - Add quick actions such as Fit full song, Fit selected range, and maybe Zoom to analyzed/detail range.
+   - Keep horizontal scroll stable when zooming out so users do not “lose” the region they were editing.
+   - Clarify the difference between full-song low-res overview and detailed analyzed heatmap.
+
+3. **Speed/responsiveness**
+   - Add cancel buttons for analysis, waveform, and overview jobs where possible.
+   - Add more detailed progress messages for long MP3s and range extraction.
+   - Consider cached overview/heatmap levels of detail so long files do not recompute or repaint unnecessarily.
+   - Move edited MIDI-preview re-rendering off the GUI thread if TiMidity becomes a noticeable pause.
+
+4. **UI polish**
+   - Continue refining the dark pro-DAW layout: reduce wasted space, improve selected-region affordances, and strengthen the hierarchy between waveform overview, detailed piano roll, and sequence table.
+   - Improve controls for range selection so the manual numeric fields, waveform handles, and Analyze action feel like one coherent workflow.
+
+5. **Editing workflow polish**
+   - Add keyboard nudging for selected notes.
+   - Add undo/redo for inspector edits, drags/resizes, CQT retunes, and deletes.
+   - Optionally add ghost previews while dragging before committing edits.
+
+6. **Session/workflow persistence**
+   - Save/load project state: audio path, selected range, backend params, overview, detailed heatmap path, extracted notes, and edited/tuned notes.

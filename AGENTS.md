@@ -70,7 +70,7 @@ Run tests:
 NOTEGRABBER_BIN=notegrabber python3 -m pytest -q
 ```
 
-Current expected result: **48 passed** when optional ML and PySide6 GUI dependencies are installed.
+Current expected result: **53 passed** when optional ML and PySide6 GUI dependencies are installed.
 
 Quick GUI manual check:
 
@@ -110,11 +110,13 @@ These are working artifacts, not core source code.
 
 ## Recommended next steps
 
-1. Add editing polish: keyboard nudging, undo/redo, and optional ghost previews during drag.
-2. Move edited MIDI-preview rendering off the GUI thread if TiMidity rendering becomes noticeably slow.
-3. Continue large-file UX work: progress detail, cancel analysis, and optional overview/heatmap level-of-detail caching.
-3. Add richer GUI playback polish: volume controls and error display for Qt audio backend failures.
-4. Add export of browser-tuned notes back to MIDI or focus that effort in the native GUI.
-5. Add explicit compare mode for CQT vs Basic Pitch outputs on one page.
-6. Add tolerant regression fixtures/metrics for real samples if legally/shareably possible.
-7. Later, move toward plugin implementation using JUCE/DPF/iPlug2/NIH-plug.
+User priorities for the next work are **UI polish, speed/responsiveness, playback/playhead sync, and zoom/navigation polish**.
+
+1. **Playback/playhead synchronization polish**: timer-driven shared playhead sync is implemented for waveform + heatmap, with MIDI-follow correction during Play both. Range-analysis MIDI preview now renders in a local timeline and maps back to the full-song waveform/heatmap timeline, clamping at the selected range end. Continue manual checks with edited MIDI preview and Qt audio backend edge cases.
+2. **Zoom/navigation polish**: note edits/clicks no longer compound the heatmap zoom by recalculating fit from the already-zoomed canvas. Pitch-row vertical zoom is implemented with Shift+wheel, and time zoom remains Ctrl+wheel; the left transcription box no longer contains zoom sliders. Continue improving horizontal zoom-out/in behavior, preserve cursor-centered zoom, add fit-to-range / fit-to-selection controls, and keep horizontal scroll position intuitive when zoom changes.
+3. **Speed/responsiveness**: waveform/heatmap playhead updates now repaint only narrow old/new playhead regions instead of redrawing the full canvases. Continue large-file UX work with progress detail, cancel analysis/overview jobs, optional overview/heatmap level-of-detail caching, and background/debounced MIDI-preview rendering if TiMidity rendering becomes noticeably slow.
+4. **UI polish**: heatmap view height is now capped relative to the window so vertical pitch zoom does not hide the inspector/sequence area, and the left-panel action buttons are placed above reserved/stub controls so Open/Analyze/Delete/Export remain visible. Continue refining the ToneTrace dark pro-DAW layout, especially control density, selected-region affordances, selected-note editing affordances, and visual hierarchy between overview waveform, detail heatmap, and sequence table.
+5. **Editing workflow polish**: add keyboard nudging, undo/redo, and optional ghost previews during drag.
+6. **Output/workflow polish**: add native CSV/minimap parity where useful, project/session save-load, and maybe export browser-tuned notes if the browser workflow remains relevant.
+7. **Analysis comparison and quality**: add explicit compare mode for CQT vs Basic Pitch outputs and tolerant regression fixtures/metrics for real samples if legally/shareably possible.
+8. Later, move toward plugin implementation using JUCE/DPF/iPlug2/NIH-plug.

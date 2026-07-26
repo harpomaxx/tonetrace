@@ -31,6 +31,73 @@ def test_play_start_position_rewinds_when_reference_player_is_at_end() -> None:
 
 
 @pytest.mark.gui
+def test_playback_sync_helpers_keep_waveform_and_heatmap_playheads_together() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+    window.waveform.set_preview([0.0, 0.1], sample_rate=1, duration_seconds=10.0)
+
+    assert window.playback_timer.interval() == 50
+    assert MainWindow._position_needs_sync(1_000, 1_050) is False
+    assert MainWindow._position_needs_sync(1_000, 1_250) is True
+
+    window._set_playhead(3.25)
+    assert window.waveform.playhead_seconds == pytest.approx(3.25)
+    assert window.piano_roll.playhead_seconds == pytest.approx(3.25)
+    assert window.waveform._playhead_update_rect(3.25).width() == 7
+    assert window.piano_roll._playhead_update_rect(3.25).width() == 7
+
+    window._set_playhead(99.0)
+    assert window.waveform.playhead_seconds == pytest.approx(10.0)
+    assert window.piano_roll.playhead_seconds == pytest.approx(10.0)
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_range_midi_preview_maps_local_time_to_full_song_timeline() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.main_window import MainWindow
+    from notegrabber.gui.state import GuiMidiNote
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+    window.waveform.set_preview([0.0, 0.1], sample_rate=1, duration_seconds=60.0)
+    window.state.analysis_start_seconds = 12.0
+    window.state.analysis_duration_seconds = 9.47
+    window.state.midi_preview_offset_seconds = 12.0
+
+    assert window._display_seconds_from_midi_position(3_000) == pytest.approx(15.0)
+    assert window._display_seconds_from_midi_position(11_000) == pytest.approx(21.47)
+    assert window._midi_position_from_display_seconds(15.0) == 3_000
+    assert window._midi_position_from_display_seconds(99.0) == 9_470
+
+    preview_notes = window._notes_for_midi_preview(
+        [
+            GuiMidiNote(pitch=60, start_seconds=10.0, duration_seconds=3.0, velocity=80),
+            GuiMidiNote(pitch=64, start_seconds=14.0, duration_seconds=1.5, velocity=90),
+            GuiMidiNote(pitch=67, start_seconds=21.0, duration_seconds=3.0, velocity=100),
+            GuiMidiNote(pitch=72, start_seconds=30.0, duration_seconds=1.0, velocity=70),
+        ]
+    )
+
+    assert [note.pitch for note in preview_notes] == [60, 64, 67]
+    assert [note.start_seconds for note in preview_notes] == pytest.approx([0.0, 2.0, 9.0])
+    assert [note.duration_seconds for note in preview_notes] == pytest.approx([1.0, 1.5, 0.47])
+    assert [note.velocity for note in preview_notes] == [80, 90, 100]
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
 def test_selected_note_summary_highlights_note_name() -> None:
     pytest.importorskip("PySide6")
 
@@ -59,6 +126,8 @@ def test_main_window_constructs_offscreen_when_pyside6_is_installed() -> None:
     assert window.controls.backend() == "basic-pitch"
     assert window.original_player.audioOutput() is window.original_audio
     assert window.midi_player.audioOutput() is window.midi_audio
+    assert window.piano_scroll.maximumHeight() <= round(window.height() * 0.48) + 1
+    assert window.sequence.minimumHeight() >= 150
     assert not window.transport.play_both.isEnabled()
     window.close()
     app.processEvents()
@@ -79,14 +148,18 @@ def test_transcription_controls_explain_sliders_offscreen() -> None:
     assert "attack" in controls.split_sensitivity.toolTip()
     assert "CQT activation threshold" in controls.cqt_threshold.toolTip()
     assert "Minimum note length" in controls.min_duration.toolTip()
-    assert "Horizontal zoom" in controls.heatmap_zoom.toolTip()
-    assert "Ctrl" in controls.heatmap_zoom.toolTip()
+    assert not hasattr(controls, "heatmap_zoom")
+    assert not hasattr(controls, "heatmap_vertical_zoom")
     assert controls.analysis_range() == (0.0, None)
     controls.range_enabled.setChecked(True)
     controls.range_start.setValue(12.0)
     controls.range_duration.setValue(30.0)
     assert controls.analysis_range() == (12.0, 30.0)
+    controls.resize(314, 760)
+    controls.show()
     app.processEvents()
+    assert controls.open_button.geometry().bottom() < controls.height()
+    assert controls.export_button.geometry().bottom() < controls.height()
 
 
 @pytest.mark.gui
@@ -330,7 +403,81 @@ def test_piano_roll_horizontal_zoom_expands_timeline_offscreen() -> None:
 
 
 @pytest.mark.gui
-def test_piano_roll_wheel_zoom_syncs_main_window_slider_offscreen() -> None:
+def test_piano_roll_note_updates_do_not_compound_zoom_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.state import GuiHeatmap, GuiMidiNote
+    from notegrabber.gui.widgets.piano_roll import PianoRollWidget
+
+    app = QApplication.instance() or QApplication([])
+    widget = PianoRollWidget()
+    widget.resize(320, 180)
+    heatmap = GuiHeatmap(
+        backend="basic-pitch",
+        midi_notes=[60, 61],
+        frame_times=[0.0, 10.0],
+        activations=[[0.0, 0.0], [0.0, 0.0]],
+        sample_rate=1,
+        hop_size=1,
+        window_size=1,
+    )
+    widget.set_data(heatmap, [GuiMidiNote(pitch=60, start_seconds=0.0, duration_seconds=1.0, velocity=80)])
+    widget.set_horizontal_zoom(4.0)
+    fit_seconds_per_pixel = widget.fit_seconds_per_pixel
+    seconds_per_pixel = widget.seconds_per_pixel
+    width = widget.width()
+
+    widget.set_data(heatmap, [GuiMidiNote(pitch=60, start_seconds=1.0, duration_seconds=1.0, velocity=80)])
+
+    assert widget.fit_seconds_per_pixel == pytest.approx(fit_seconds_per_pixel)
+    assert widget.seconds_per_pixel == pytest.approx(seconds_per_pixel)
+    assert widget.horizontal_zoom == pytest.approx(4.0)
+    assert widget.width() == width
+    widget.set_horizontal_zoom(1.0)
+    assert widget.seconds_per_pixel == pytest.approx(fit_seconds_per_pixel)
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_piano_roll_vertical_zoom_expands_pitch_rows_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.state import GuiHeatmap, GuiMidiNote
+    from notegrabber.gui.widgets.piano_roll import PianoRollWidget
+
+    app = QApplication.instance() or QApplication([])
+    widget = PianoRollWidget()
+    widget.resize(320, 180)
+    heatmap = GuiHeatmap(
+        backend="basic-pitch",
+        midi_notes=list(range(36, 84)),
+        frame_times=[0.0, 10.0],
+        activations=[[0.0] * 48, [0.0] * 48],
+        sample_rate=1,
+        hop_size=1,
+        window_size=1,
+    )
+    widget.set_data(heatmap, [GuiMidiNote(pitch=60, start_seconds=0.0, duration_seconds=1.0, velocity=80)])
+    original_height = widget.minimumHeight()
+    original_seconds_per_pixel = widget.seconds_per_pixel
+
+    widget.set_vertical_zoom(3.0)
+
+    assert widget.vertical_zoom == pytest.approx(3.0)
+    assert widget.note_height == 21
+    assert widget.minimumHeight() > original_height
+    assert widget.seconds_per_pixel == pytest.approx(original_seconds_per_pixel)
+    widget.vertical_zoom_by_wheel_delta(-120)
+    assert widget.vertical_zoom == pytest.approx(2.5)
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_piano_roll_mouse_wheel_zoom_works_without_left_panel_sliders_offscreen() -> None:
     pytest.importorskip("PySide6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -352,8 +499,12 @@ def test_piano_roll_wheel_zoom_syncs_main_window_slider_offscreen() -> None:
     window._set_display_notes([])
 
     window.piano_roll.zoom_by_wheel_delta(120)
+    window.piano_roll.vertical_zoom_by_wheel_delta(120)
 
-    assert window.controls.zoom_factor() == pytest.approx(1.2)
+    assert window.piano_roll.horizontal_zoom == pytest.approx(1.2)
+    assert window.piano_roll.vertical_zoom == pytest.approx(1.2)
+    assert not hasattr(window.controls, "heatmap_zoom")
+    assert not hasattr(window.controls, "heatmap_vertical_zoom")
     window.close()
     app.processEvents()
 

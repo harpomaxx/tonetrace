@@ -42,11 +42,6 @@ MIN_DURATION_HELP = (
     "Minimum note length in milliseconds. Raise it to remove tiny blips and glitches; "
     "lower it to keep short ornaments, fast runs, or staccato notes."
 )
-HEATMAP_ZOOM_HELP = (
-    "Horizontal zoom for the heatmap and MIDI notes. 100% fits the full song; "
-    "higher values spread time out so you can scroll to a section and edit notes precisely. "
-    "Tip: hold Ctrl and use the mouse wheel over the piano roll to zoom quickly."
-)
 
 
 class AnalysisControls(QWidget):
@@ -58,7 +53,6 @@ class AnalysisControls(QWidget):
     open_requested = Signal()
     retune_requested = Signal()
     overlay_toggled = Signal(bool)
-    zoom_changed = Signal(float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -69,12 +63,10 @@ class AnalysisControls(QWidget):
         self.split_sensitivity = self._slider(0, 100, int(BASIC_PITCH_ONSET_THRESHOLD * 100))
         self.cqt_threshold = self._slider(0, 100, int(CQT_THRESHOLD * 100))
         self.min_duration = self._slider(0, 500, int(BASIC_PITCH_MIN_DURATION_SECONDS * 1000))
-        self.heatmap_zoom = self._slider(100, 3200, 100)
         self.note_sensitivity.setToolTip(NOTE_SENSITIVITY_HELP)
         self.split_sensitivity.setToolTip(SPLIT_SENSITIVITY_HELP)
         self.cqt_threshold.setToolTip(CQT_THRESHOLD_HELP)
         self.min_duration.setToolTip(MIN_DURATION_HELP)
-        self.heatmap_zoom.setToolTip(HEATMAP_ZOOM_HELP)
         self.range_enabled = QCheckBox("Analyze range only")
         self.range_start = self._seconds_spin(0.0)
         self.range_duration = self._seconds_spin(30.0)
@@ -103,11 +95,13 @@ class AnalysisControls(QWidget):
         layout.addWidget(brand)
         layout.addWidget(self._build_transcription_group())
         layout.addWidget(self._build_range_group())
+        # Keep the primary workflow buttons above lower-priority reserved controls
+        # so Open/Analyze/Delete/Export remain visible on shorter screens.
+        layout.addWidget(self._build_action_group())
         layout.addWidget(self._build_stub_group("Pitch bend", "No Pitch Bend (reserved)"))
         layout.addWidget(self._build_stub_group("Scale quantize", "Disabled for first milestone"))
         layout.addWidget(self._build_stub_group("Time quantize", "Disabled for first milestone"))
         layout.addStretch(1)
-        layout.addWidget(self._build_action_group())
 
         self.open_button.clicked.connect(self.open_requested.emit)
         self.analyze_button.clicked.connect(self.analyze_requested.emit)
@@ -116,7 +110,6 @@ class AnalysisControls(QWidget):
         self.show_overlay.toggled.connect(self.overlay_toggled.emit)
         for slider in (self.note_sensitivity, self.split_sensitivity, self.cqt_threshold, self.min_duration):
             slider.valueChanged.connect(self.retune_requested.emit)
-        self.heatmap_zoom.valueChanged.connect(lambda value: self.zoom_changed.emit(value / 100.0))
 
     def backend(self) -> str:
         return self.backend_combo.currentText()
@@ -132,18 +125,6 @@ class AnalysisControls(QWidget):
 
     def min_duration_seconds(self) -> float:
         return self.min_duration.value() / 1000.0
-
-    def zoom_factor(self) -> float:
-        return self.heatmap_zoom.value() / 100.0
-
-    def set_zoom_factor(self, zoom: float) -> None:
-        """Update the zoom slider without re-emitting zoom_changed."""
-
-        previous = self.heatmap_zoom.blockSignals(True)
-        try:
-            self.heatmap_zoom.setValue(max(self.heatmap_zoom.minimum(), min(self.heatmap_zoom.maximum(), round(zoom * 100))))
-        finally:
-            self.heatmap_zoom.blockSignals(previous)
 
     def analysis_range(self) -> tuple[float, float | None]:
         if not self.range_enabled.isChecked():
@@ -180,6 +161,7 @@ class AnalysisControls(QWidget):
 
     def _build_action_group(self) -> QGroupBox:
         group = QGroupBox("Actions")
+        group.setObjectName("actionsGroup")
         group.setProperty("panel", "muted")
         grid = QGridLayout(group)
         grid.setContentsMargins(10, 10, 10, 10)
@@ -210,7 +192,6 @@ class AnalysisControls(QWidget):
         form.addRow(self._help_label("Split sensitivity ⓘ", SPLIT_SENSITIVITY_HELP), self.split_sensitivity)
         form.addRow(self._help_label("CQT threshold ⓘ", CQT_THRESHOLD_HELP), self.cqt_threshold)
         form.addRow(self._help_label("Min note duration ⓘ", MIN_DURATION_HELP), self.min_duration)
-        form.addRow(self._help_label("Heatmap zoom ⓘ", HEATMAP_ZOOM_HELP), self.heatmap_zoom)
         form.addRow(self.show_overlay)
         return group
 

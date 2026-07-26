@@ -84,7 +84,7 @@ notegrabber-gui
 notegrabber gui
 ```
 
-The GUI currently opens audio files, loads waveform previews and low-resolution full-song pitch overviews in background workers, runs full-file or selected-range analysis in a background worker, displays a heatmap with MIDI rectangles, shows an onset-grouped sequence table, supports CQT retuning from the loaded heatmap, compares original vs rendered MIDI playback with Qt Multimedia, seeks both players from the waveform/piano roll/sequence table, selects/highlights piano-roll notes, shows resize handles and cursor feedback for hovered/selected notes, edits selected notes through an inspector, drags/resizes notes directly in the piano roll, deletes selected notes into an edited/tuned list, re-renders the MIDI WAV preview after committed edits when rendering is enabled, and exports the current note list as MIDI. It implements milestones 0–4 in basic form. Editing polish such as undo/redo and keyboard nudging is a future milestone.
+The GUI currently opens audio files, loads waveform previews and low-resolution full-song pitch overviews in background workers, runs full-file or selected-range analysis in a background worker, displays a heatmap with MIDI rectangles, shows an onset-grouped sequence table, supports CQT retuning from the loaded heatmap, compares original vs rendered MIDI playback with Qt Multimedia, seeks both players from the waveform/piano roll/sequence table, selects/highlights piano-roll notes, shows resize handles and cursor feedback for hovered/selected notes, edits selected notes through an inspector, drags/resizes notes directly in the piano roll, deletes selected notes into an edited/tuned list, re-renders the MIDI WAV preview after committed edits when rendering is enabled, and exports the current note list as MIDI. It implements milestones 0–4 in basic form. Current priorities are UI polish, speed/responsiveness, playback/playhead synchronization across waveform and heatmap, and heatmap zoom/navigation polish. Editing polish such as undo/redo and keyboard nudging is also still a future milestone.
 
 ### Serve/upload/re-analyze
 
@@ -330,7 +330,7 @@ NOTEGRABBER_BIN=notegrabber python3 -m pytest -q
 Current expected result with ML and GUI dependencies installed:
 
 ```text
-48 passed
+53 passed
 ```
 
 ## Guidance for a native standalone Linux app
@@ -418,10 +418,11 @@ The native GUI now makes tuned/exported notes first-class for CQT retuning plus 
 
 ## Recommended next milestones
 
-1. Add editing polish: keyboard nudging, undo/redo, and optional ghost previews during drag.
-2. Move edited MIDI-preview rendering off the GUI thread if TiMidity rendering becomes noticeably slow.
-3. Add richer GUI playback polish: volume controls and Qt audio error display.
-4. Add compare mode: Basic Pitch vs CQT side-by-side.
-5. Add large-file UX: progress indicator detail, cancel button, background worker cancellation, and optional heatmap level-of-detail caching.
-6. Add persistent project/session format containing audio path, backend params, heatmap path, and tuned notes.
-7. Move toward native standalone app packaging and later plugin work.
+1. Continue playback/playhead synchronization polish: timer-driven waveform + heatmap playhead sync and MIDI-follow correction during Play both are implemented. Range-analysis MIDI preview is now rendered in a local timeline, mapped back to the full-song timeline, and clamped at the selected range end; continue manual checks for edited MIDI previews and Qt backend edge cases.
+2. Improve heatmap zoom/navigation: note edits/clicks no longer compound zoom by recalculating fit from the already-zoomed canvas, and mouse-wheel zoom is implemented with Ctrl+wheel for time and Shift+wheel for pitch. Left-panel zoom sliders were removed to reduce clutter. Next: cursor-centered Ctrl+wheel time zoom, Fit full song, Fit selected range, stable scroll when zooming out, and clearer overview-vs-detail semantics.
+3. Improve speed/responsiveness: playhead updates now repaint only narrow old/new playhead regions instead of redrawing the full waveform/heatmap canvases. Next: progress detail, cancel buttons/background cancellation, overview/heatmap level-of-detail caching, and background/debounced MIDI preview rendering if TiMidity blocks.
+4. Continue UI polish: left-panel action buttons are now placed above lower-priority reserved controls so Open/Analyze/Delete/Export remain visible on shorter windows. Next: denser controls, clearer selected-region affordances, stronger overview/detail/sequence visual hierarchy, and richer Qt audio error/volume UI.
+5. Add editing polish: keyboard nudging, undo/redo, and optional ghost previews during drag.
+6. Add compare mode: Basic Pitch vs CQT side-by-side.
+7. Add persistent project/session format containing audio path, selected range, backend params, overview/detail heatmap paths, and tuned notes.
+8. Move toward native standalone app packaging and later plugin work.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QSize, QRectF, Qt, Signal
+from PySide6.QtCore import QRect, QSize, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
@@ -18,6 +18,7 @@ class PianoRollWidget(QWidget):
     note_selected = Signal(int, float)
     note_edited = Signal(int, float, float, int, int, bool)
     zoom_changed = Signal(float)
+    vertical_zoom_changed = Signal(float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -31,23 +32,28 @@ class PianoRollWidget(QWidget):
         self.seconds_per_pixel = 0.01
         self.fit_seconds_per_pixel = 0.01
         self.horizontal_zoom = 1.0
-        self.note_height = 7
+        self.vertical_zoom = 1.0
+        self.base_note_height = 7
+        self.note_height = self.base_note_height
         self.keyboard_width = 54
         self.drag_mode: str | None = None
         self.drag_note_index: int | None = None
         self.drag_start_x = 0.0
         self.drag_start_y = 0.0
         self.drag_original_note: GuiMidiNote | None = None
+        self.drag_has_moved = False
+        self.drag_threshold_pixels = 3.0
         self.min_note_duration_seconds = 0.001
         self.minimum_canvas_width = 760
         self.minimum_canvas_height = 420
         self.setMouseTracking(True)
-        self.setToolTip("Click notes to select. Drag note bodies to move time/pitch; drag edges to resize.")
+        self.setToolTip("Click notes to select. Drag note bodies to move time/pitch; drag edges to resize. Ctrl+wheel zooms time; Shift+wheel changes note height.")
         self.setMinimumSize(self.minimum_canvas_width, self.minimum_canvas_height)
 
     def set_data(self, heatmap: GuiHeatmap | None, notes: list[GuiMidiNote]) -> None:
         """Update heatmap and notes."""
 
+        heatmap_changed = heatmap is not self.heatmap
         self.heatmap = heatmap
         self.notes = notes
         if self.selected_note_index is not None and self.selected_note_index >= len(notes):
@@ -55,9 +61,9 @@ class PianoRollWidget(QWidget):
         if self.hover_note_index is not None and self.hover_note_index >= len(notes):
             self.hover_note_index = None
             self.hover_mode = None
-        if heatmap is not None:
+        if heatmap is not None and heatmap_changed:
             duration = max(heatmap.duration_seconds, max((note.end_seconds for note in notes), default=0.0), 1.0)
-            available_width = max(300, self.width() - self.keyboard_width)
+            available_width = self._fit_available_width()
             self.fit_seconds_per_pixel = max(0.0005, duration / available_width)
             self.seconds_per_pixel = max(0.0005, self.fit_seconds_per_pixel / self.horizontal_zoom)
         self._update_canvas_size()
@@ -66,6 +72,14 @@ class PianoRollWidget(QWidget):
 
     def sizeHint(self) -> QSize:  # noqa: N802 - Qt API
         return QSize(self.minimumWidth(), self.minimumHeight())
+
+    def _fit_available_width(self) -> int:
+        """Return viewport width for fit calculations, not the zoomed canvas width."""
+
+        parent = self.parentWidget()
+        if parent is not None and parent.width() > self.keyboard_width + 100:
+            return max(300, parent.width() - self.keyboard_width)
+        return max(300, min(self.width(), self.minimum_canvas_width) - self.keyboard_width)
 
     def _update_canvas_size(self) -> None:
         if self.heatmap is None:
@@ -89,6 +103,15 @@ class PianoRollWidget(QWidget):
         self.updateGeometry()
         self.update()
 
+    def set_vertical_zoom(self, zoom: float) -> None:
+        """Set vertical pitch zoom by changing the rendered note-row height."""
+
+        self.vertical_zoom = max(0.75, min(6.0, float(zoom)))
+        self.note_height = max(4, round(self.base_note_height * self.vertical_zoom))
+        self._update_canvas_size()
+        self.updateGeometry()
+        self.update()
+
     def set_show_notes(self, enabled: bool) -> None:
         self.show_notes = enabled
         self.update()
@@ -100,12 +123,26 @@ class PianoRollWidget(QWidget):
         self.update()
 
     def set_playhead(self, seconds: float) -> None:
-        """Set the drawn playhead position."""
+        """Set the drawn playhead position without repainting the full heatmap."""
 
+        old_seconds = self.playhead_seconds
         self.playhead_seconds = max(0.0, seconds)
-        self.update()
+        if self.heatmap is None:
+            self.update()
+            return
+        self.update(self._playhead_update_rect(old_seconds).united(self._playhead_update_rect(self.playhead_seconds)))
+
+    def _playhead_update_rect(self, seconds: float) -> QRect:
+        x = int(self.keyboard_width + max(0.0, seconds) / self.seconds_per_pixel)
+        return QRect(max(0, x - 3), 0, 7, self.height())
 
     def wheelEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if self.heatmap is not None and event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            delta_y = event.angleDelta().y() or event.pixelDelta().y()
+            if delta_y:
+                self.vertical_zoom_by_wheel_delta(delta_y)
+                event.accept()
+                return
         if self.heatmap is not None and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             delta_y = event.angleDelta().y() or event.pixelDelta().y()
             if delta_y:
@@ -121,6 +158,13 @@ class PianoRollWidget(QWidget):
         self.set_horizontal_zoom(self.horizontal_zoom * factor)
         self.zoom_changed.emit(self.horizontal_zoom)
 
+    def vertical_zoom_by_wheel_delta(self, delta_y: int) -> None:
+        """Zoom note height from a wheel delta; positive delta makes rows taller."""
+
+        factor = 1.2 ** (delta_y / 120.0)
+        self.set_vertical_zoom(self.vertical_zoom * factor)
+        self.vertical_zoom_changed.emit(self.vertical_zoom)
+
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt API
         if self.heatmap is not None and event.button() == Qt.MouseButton.LeftButton:
             x = float(event.position().x())
@@ -133,6 +177,7 @@ class PianoRollWidget(QWidget):
                 self.drag_start_x = x
                 self.drag_start_y = y
                 self.drag_original_note = self.notes[note_index]
+                self.drag_has_moved = False
                 self.set_selected_note_index(note_index)
                 note = self.notes[note_index]
                 self.note_selected.emit(note_index, note.start_seconds)
@@ -151,6 +196,12 @@ class PianoRollWidget(QWidget):
         x = float(event.position().x())
         y = float(event.position().y())
         if self.drag_mode is not None and self.drag_note_index is not None and self.drag_original_note is not None:
+            if not self.drag_has_moved:
+                distance = math.hypot(x - self.drag_start_x, y - self.drag_start_y)
+                if distance < self.drag_threshold_pixels:
+                    super().mouseMoveEvent(event)
+                    return
+                self.drag_has_moved = True
             edited = self._edited_drag_note(x, y)
             if edited is not None:
                 self.note_edited.emit(
@@ -166,7 +217,7 @@ class PianoRollWidget(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt API
-        if self.drag_mode is not None and self.drag_note_index is not None and self.drag_original_note is not None:
+        if self.drag_mode is not None and self.drag_note_index is not None and self.drag_original_note is not None and self.drag_has_moved:
             edited = self._edited_drag_note(float(event.position().x()), float(event.position().y()))
             if edited is not None:
                 self.note_edited.emit(
@@ -180,6 +231,7 @@ class PianoRollWidget(QWidget):
         self.drag_mode = None
         self.drag_note_index = None
         self.drag_original_note = None
+        self.drag_has_moved = False
         self._update_hover_state(float(event.position().x()), float(event.position().y()))
         super().mouseReleaseEvent(event)
 
@@ -316,9 +368,12 @@ class PianoRollWidget(QWidget):
 
     def _draw_notes(self, painter: QPainter) -> None:
         assert self.heatmap is not None
+        clip = painter.clipBoundingRect()
         for list_index, note in enumerate(self.notes):
             rect = self._note_rect(note)
             if rect is None:
+                continue
+            if not clip.isEmpty() and (rect.right() < clip.left() or rect.left() > clip.right() or rect.bottom() < clip.top() or rect.top() > clip.bottom()):
                 continue
             is_selected = list_index == self.selected_note_index
             is_hovered = list_index == self.hover_note_index

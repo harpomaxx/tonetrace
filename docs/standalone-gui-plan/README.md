@@ -53,8 +53,8 @@ Implemented in the GUI:
 - background waveform preview loading with click-to-seek playhead, drag-to-select analysis ranges, and draggable selection handles, including non-WAV fallback previews through standalone/librosa dependencies
 - background low-resolution full-song pitch overview for finding sample/chop regions before detailed analysis
 - background analysis worker using existing Python backends, with optional time-range extraction for long files that is offset back onto the full-song timeline
-- heatmap/piano-roll widget with MIDI note overlay, keyboard axis, slider/Ctrl+wheel horizontal zoom/scrolling, and pixel-aggregated drawing for large/long analyses
-- NeuralNote-inspired left controls for backend, note sensitivity, split sensitivity, CQT threshold, minimum duration, heatmap zoom, and analysis range
+- heatmap/piano-roll widget with MIDI note overlay, keyboard axis, Ctrl+wheel horizontal time zoom, Shift+wheel vertical pitch zoom, scrolling, and pixel-aggregated drawing for large/long analyses
+- NeuralNote-inspired left controls for backend, note sensitivity, split sensitivity, CQT threshold, minimum duration, and analysis range
 - original audio and rendered MIDI WAV playback through Qt Multimedia
 - Play both / Original / MIDI / Pause / Stop transport controls
 - seeking both players from waveform, piano roll, or sequence table
@@ -67,11 +67,14 @@ Implemented in the GUI:
 - polished first-pass dark pro-DAW Qt theme with warm red/orange/yellow accents, rounded cards, styled controls, compact action pad, SVG button icons, and explanatory slider tooltips
 - export current analyzed/tuned/edited/deleted note list to MIDI
 
-Still pending:
+Still pending / next priorities:
 
-- optional ghost-preview polish during drag
-- undo/redo for edits
-- off-main-thread/debounced MIDI preview rendering if synchronous TiMidity++ rendering becomes slow
+- continued playback/playhead synchronization polish between waveform, heatmap, original audio, and rendered MIDI preview; timer-driven shared playhead sync plus range-aware MIDI preview timeline mapping are implemented
+- zoom/navigation polish: note edits/clicks no longer compound zoom; mouse-wheel time/pitch zoom is implemented without left-panel zoom sliders; still pending cursor-centered Ctrl+wheel zoom, fit-to-selection/full-song actions, and stable scroll position when zooming out
+- speed/responsiveness polish: cancel long jobs, better progress detail, optional overview/heatmap level-of-detail caching, and background/debounced MIDI preview rendering if TiMidity++ blocks
+- UI polish for the sampler workflow: clearer selected-region affordances, denser but readable controls, stronger hierarchy between overview waveform and detail piano roll
+- optional ghost-preview polish during note drag
+- undo/redo and keyboard nudging for edits
 - custom knob/dial styling for the transcription controls
 - native minimap/CSV copy parity with the browser viewer
 - richer Qt audio error/volume UI

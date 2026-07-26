@@ -57,6 +57,9 @@ class AnalysisResult:
     render_error: str | None
     notes: list[GuiMidiNote]
     heatmap: GuiHeatmap
+    analysis_start_seconds: float = 0.0
+    analysis_duration_seconds: float | None = None
+    midi_preview_offset_seconds: float = 0.0
 
 
 class AnalysisWorker(QObject):
@@ -95,7 +98,7 @@ class AnalysisWorker(QObject):
                 )
 
             self.progress.emit(f"Analyzing with {self.request.backend}…")
-            midi_notes = analyze_wav_to_midi(
+            local_midi_notes = analyze_wav_to_midi(
                 analysis_audio_path,
                 midi_path,
                 heatmap_path=heatmap_path,
@@ -106,8 +109,10 @@ class AnalysisWorker(QObject):
                 min_duration_seconds=self.request.min_duration_seconds,
             )
             heatmap_document = json.loads(heatmap_path.read_text(encoding="utf-8"))
+            preview_midi_notes = _clip_midi_notes_to_duration(local_midi_notes, self.request.range_duration_seconds)
+            midi_notes = local_midi_notes
             if offset_seconds:
-                midi_notes = _offset_midi_notes(midi_notes, offset_seconds)
+                midi_notes = _offset_midi_notes(local_midi_notes, offset_seconds)
                 _offset_heatmap_document(heatmap_document, offset_seconds)
                 write_midi(midi_path, midi_notes)
                 heatmap_path.write_text(json.dumps(heatmap_document, indent=2), encoding="utf-8")
@@ -118,7 +123,11 @@ class AnalysisWorker(QObject):
             render_error: str | None = None
             if self.request.render_midi:
                 self.progress.emit("Rendering MIDI preview…")
-                rendered_midi_wav, render_error = render_midi_to_wav(midi_path, rendered_path)
+                preview_midi_path = midi_path
+                if self.request.range_duration_seconds is not None:
+                    preview_midi_path = work_dir / "analysis-preview-local.mid"
+                    write_midi(preview_midi_path, preview_midi_notes)
+                rendered_midi_wav, render_error = render_midi_to_wav(preview_midi_path, rendered_path)
 
             self.finished.emit(
                 AnalysisResult(
@@ -130,6 +139,9 @@ class AnalysisWorker(QObject):
                     render_error=render_error,
                     notes=notes,
                     heatmap=heatmap,
+                    analysis_start_seconds=offset_seconds if self.request.range_duration_seconds is not None else 0.0,
+                    analysis_duration_seconds=self.request.range_duration_seconds,
+                    midi_preview_offset_seconds=offset_seconds if self.request.range_duration_seconds is not None else 0.0,
                 )
             )
         except Exception as exc:  # pragma: no cover - exercised by manual GUI flows
@@ -159,6 +171,29 @@ def _offset_heatmap_document(document: dict[str, Any], offset_seconds: float) ->
 
     for frame in document.get("frames", []):
         frame["time_seconds"] = float(frame.get("time_seconds", 0.0)) + offset_seconds
+
+
+def _clip_midi_notes_to_duration(notes: list[MidiNote], duration_seconds: float | None) -> list[MidiNote]:
+    """Return notes clipped to a local preview duration."""
+
+    if duration_seconds is None:
+        return list(notes)
+    end_tick = max(1, round(max(0.0, duration_seconds) * TICKS_PER_SECOND))
+    clipped: list[MidiNote] = []
+    for note in notes:
+        start_tick = max(0, note.start_tick)
+        if start_tick >= end_tick:
+            continue
+        duration_ticks = max(1, min(note.duration_ticks, end_tick - start_tick))
+        clipped.append(
+            MidiNote(
+                pitch=note.pitch,
+                start_tick=start_tick,
+                duration_ticks=duration_ticks,
+                velocity=note.velocity,
+            )
+        )
+    return clipped
 
 
 def _extract_audio_range(input_audio: Path, output_wav: Path, *, start_seconds: float, duration_seconds: float) -> Path:

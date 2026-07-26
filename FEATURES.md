@@ -86,7 +86,7 @@ The PySide6 GUI follows the standalone GUI plan in `docs/standalone-gui-plan/` a
 - Basic Pitch/CQT/simple backend selector
 - NeuralNote-inspired transcription controls plus analysis range controls
 - background analysis worker with optional range-only analysis for long files, offset back onto the full-song timeline
-- heatmap + MIDI rectangle piano-roll widget with slider/Ctrl+wheel horizontal zoom, scrolling, and pixel-aggregated drawing for large/long analyses
+- heatmap + MIDI rectangle piano-roll widget with Ctrl+wheel horizontal time zoom, Shift+wheel vertical pitch zoom, scrolling, and pixel-aggregated drawing for large/long analyses
 - onset-grouped detected sequence table
 - original/rendered-MIDI playback controls via Qt Multimedia
 - seek both players by clicking the waveform, piano roll, or sequence rows
@@ -109,6 +109,15 @@ python3 -m pip install -e '.[gui]'
 python3 -m pip install -e '.[standalone]'
 ```
 
-## Current limitation
+## Current limitation / next focus
 
-Browser retuning updates the overlay/table in memory but does not yet export a new tuned MIDI file. The native GUI can export analyzed/tuned/edited notes, compare original-vs-MIDI playback, perform basic selection/inspector/drag/resize/delete editing, and re-render the MIDI WAV preview after committed edits when TiMidity++ is available. Plugin formats such as VST/LV2/CLAP are not implemented yet.
+Browser retuning updates the overlay/table in memory but does not yet export a new tuned MIDI file. The native GUI can export analyzed/tuned/edited notes, compare original-vs-MIDI playback, perform basic selection/inspector/drag/resize/delete editing, and re-render the MIDI WAV preview after committed edits when TiMidity++ is available.
+
+Near-term native GUI focus:
+
+- improve playback/playhead synchronization between waveform, heatmap, original audio, and MIDI preview
+- improve heatmap zoom/navigation, especially zoom-out behavior, cursor-centered Ctrl+wheel zoom, and fit-to-selection/full-song actions
+- improve speed/responsiveness for large files with cancel/progress/LOD caching and less blocking preview rendering
+- continue UI polish for the sampler workflow and selected-region editing
+
+Plugin formats such as VST/LV2/CLAP are not implemented yet.

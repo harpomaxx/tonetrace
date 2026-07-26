@@ -8,7 +8,7 @@ from typing import Iterable
 from notegrabber.analyzer import read_wav
 from notegrabber.gui.overview import PitchOverview
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QRect, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
@@ -101,10 +101,21 @@ class WaveformWidget(QWidget):
         return max(0.0, self.audio_duration_seconds)
 
     def set_playhead(self, seconds: float) -> None:
-        """Set the drawn playhead position."""
+        """Set the drawn playhead position without repainting the full waveform."""
 
+        old_seconds = self.playhead_seconds
         self.playhead_seconds = max(0.0, seconds)
-        self.update()
+        if self.duration_seconds() <= 0:
+            self.update()
+            return
+        self.update(self._playhead_update_rect(old_seconds).united(self._playhead_update_rect(self.playhead_seconds)))
+
+    def _playhead_update_rect(self, seconds: float) -> QRect:
+        duration = self.duration_seconds()
+        if duration <= 0:
+            return self.rect()
+        x = int(max(0.0, min(1.0, max(0.0, seconds) / duration)) * max(1, self.width()))
+        return QRect(max(0, x - 3), 0, 7, self.height())
 
     def set_selection(self, start_seconds: float | None, duration_seconds: float | None) -> None:
         """Set or clear the highlighted waveform range selection."""
@@ -261,9 +272,12 @@ class WaveformWidget(QWidget):
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.empty_message)
             return
 
+        clip = painter.clipBoundingRect()
+        clip_left = max(0, int(clip.left()) - 1) if not clip.isEmpty() else 0
+        clip_right = min(width, int(clip.right()) + 2) if not clip.isEmpty() else width
         step = max(1, len(self.samples) // width)
         painter.setPen(QPen(QColor(255, 170, 72), 1))
-        for x in range(width):
+        for x in range(clip_left, clip_right):
             start = x * step
             end = min(len(self.samples), start + step)
             if start >= end:
@@ -295,6 +309,9 @@ class WaveformWidget(QWidget):
             return
         top = height - overview_height
         painter.fillRect(0, top, width, overview_height, QColor(9, 10, 15))
+        clip = painter.clipBoundingRect()
+        clip_left = clip.left() if not clip.isEmpty() else 0.0
+        clip_right = clip.right() if not clip.isEmpty() else float(width)
         duration = max(self.duration_seconds(), overview.duration_seconds, 0.001)
         band_height = max(1.0, overview_height / overview.band_count)
         for frame_index, time_seconds in enumerate(overview.frame_times):
@@ -302,6 +319,8 @@ class WaveformWidget(QWidget):
             next_time = overview.frame_times[frame_index + 1] if frame_index + 1 < overview.frame_count else duration
             next_x = int(max(0.0, min(1.0, next_time / duration)) * width)
             column_width = max(1, next_x - x)
+            if x + column_width < clip_left or x > clip_right:
+                continue
             for band_index in range(overview.band_count):
                 activation = overview.activation(frame_index, band_index)
                 if activation <= 0.04:

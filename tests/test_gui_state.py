@@ -16,7 +16,7 @@ from notegrabber.gui.state import (
     midi_note_to_gui,
     retune_notes_from_heatmap,
 )
-from notegrabber.gui.analysis_worker import _offset_heatmap_document, _offset_midi_notes
+from notegrabber.gui.analysis_worker import _clip_midi_notes_to_duration, _offset_heatmap_document, _offset_midi_notes
 from notegrabber.gui.overview import PitchOverview, downsample_overview_frames
 from notegrabber.midi import MidiNote, TICKS_PER_SECOND
 
@@ -64,6 +64,22 @@ def test_pitch_overview_downsamples_by_max_pooling() -> None:
     assert times == [0.0, 2.0, 4.0]
     assert pooled == [[0.1, 0.5], [0.3, 0.3], [0.5, 0.1]]
     assert overview.activation(0, 1) == pytest.approx(0.5)
+
+
+@pytest.mark.gui
+def test_clip_midi_notes_to_preview_duration() -> None:
+    notes = [
+        MidiNote(pitch=60, start_tick=0, duration_ticks=2 * TICKS_PER_SECOND, velocity=80),
+        MidiNote(pitch=64, start_tick=TICKS_PER_SECOND, duration_ticks=2 * TICKS_PER_SECOND, velocity=90),
+        MidiNote(pitch=67, start_tick=3 * TICKS_PER_SECOND, duration_ticks=TICKS_PER_SECOND, velocity=100),
+    ]
+
+    clipped = _clip_midi_notes_to_duration(notes, 2.0)
+
+    assert clipped == [
+        MidiNote(pitch=60, start_tick=0, duration_ticks=2 * TICKS_PER_SECOND, velocity=80),
+        MidiNote(pitch=64, start_tick=TICKS_PER_SECOND, duration_ticks=TICKS_PER_SECOND, velocity=90),
+    ]
 
 
 @pytest.mark.gui

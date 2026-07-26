@@ -105,7 +105,8 @@ Use real Qt widgets first, custom knob styling later:
 - y-axis: MIDI notes 21–108 with piano keyboard
 - x-axis: seconds/frames
 - heatmap as raster/aggregated columns depending on zoom and file length
-- horizontal zoom slider plus Ctrl+mouse-wheel zoom and scroll for working on song sections
+- Ctrl+mouse-wheel horizontal time zoom and scroll for working on song sections
+- Shift+mouse-wheel vertical pitch zoom for taller note rows and easier note selection
 - analysis range controls for transcribing only a selected start/duration in long files
 - MIDI notes as rectangles
 - selected-note label: MIDI pitch, time, duration, velocity

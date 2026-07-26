@@ -95,6 +95,9 @@ class ProjectState:
     onset_threshold: float = BASIC_PITCH_ONSET_THRESHOLD
     frame_threshold: float = BASIC_PITCH_FRAME_THRESHOLD
     min_duration: float = BASIC_PITCH_MIN_DURATION_SECONDS
+    analysis_start_seconds: float = 0.0
+    analysis_duration_seconds: float | None = None
+    midi_preview_offset_seconds: float = 0.0
 
     @property
     def current_notes(self) -> list[GuiMidiNote]:
