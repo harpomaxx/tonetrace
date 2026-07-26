@@ -42,7 +42,8 @@ def test_playback_sync_helpers_keep_waveform_and_heatmap_playheads_together() ->
     window = MainWindow(render_midi=False)
     window.waveform.set_preview([0.0, 0.1], sample_rate=1, duration_seconds=10.0)
 
-    assert window.playback_timer.interval() == 50
+    assert window.playback_timer.interval() == 16
+    assert MainWindow._interpolated_display_seconds(10.0, 250) == pytest.approx(10.25)
     assert MainWindow._position_needs_sync(1_000, 1_050) is False
     assert MainWindow._position_needs_sync(1_000, 1_250) is True
 

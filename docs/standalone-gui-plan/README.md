@@ -69,7 +69,7 @@ Implemented in the GUI:
 
 Still pending / next priorities:
 
-- continued playback/playhead synchronization polish between waveform, heatmap, original audio, and rendered MIDI preview; timer-driven shared playhead sync plus range-aware MIDI preview timeline mapping are implemented
+- continued playback/playhead synchronization polish between waveform, heatmap, original audio, and rendered MIDI preview; smooth interpolated shared playhead sync plus range-aware MIDI preview timeline mapping are implemented
 - zoom/navigation polish: note edits/clicks no longer compound zoom; mouse-wheel time/pitch zoom is implemented without left-panel zoom sliders; still pending cursor-centered Ctrl+wheel zoom, fit-to-selection/full-song actions, and stable scroll position when zooming out
 - speed/responsiveness polish: cancel long jobs, better progress detail, optional overview/heatmap level-of-detail caching, and background/debounced MIDI preview rendering if TiMidity++ blocks
 - UI polish for the sampler workflow: clearer selected-region affordances, denser but readable controls, stronger hierarchy between overview waveform and detail piano roll

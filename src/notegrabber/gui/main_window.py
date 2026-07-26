@@ -6,7 +6,7 @@ import tempfile
 import wave
 from pathlib import Path
 
-from PySide6.QtCore import QThread, QTimer, Qt, QUrl
+from PySide6.QtCore import QElapsedTimer, QThread, QTimer, Qt, QUrl
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
@@ -54,7 +54,11 @@ class MainWindow(QMainWindow):
         self.selected_note_index: int | None = None
         self.playback_mode = "stopped"
         self.playback_timer = QTimer(self)
-        self.playback_timer.setInterval(50)
+        self.playback_timer.setInterval(16)
+        self.playback_clock = QElapsedTimer()
+        self.playback_clock_anchor_seconds = 0.0
+        self.playback_clock_valid = False
+        self.playback_sync_ticks = 0
 
         self.setWindowTitle("ToneTrace")
         self.resize(1280, 820)
@@ -637,6 +641,8 @@ class MainWindow(QMainWindow):
         self.original_player.setPosition(self._original_position_from_display_seconds(display_seconds))
         if self.state.rendered_midi_wav is not None:
             self.midi_player.setPosition(self._midi_position_from_display_seconds(display_seconds))
+        if self.playback_timer.isActive():
+            self._start_playback_clock(display_seconds)
         self._set_playhead(display_seconds)
 
     def _play_both(self) -> None:
@@ -646,6 +652,7 @@ class MainWindow(QMainWindow):
         self.original_player.setPosition(self._original_position_from_display_seconds(display_seconds))
         self.midi_player.setPosition(self._midi_position_from_display_seconds(display_seconds))
         self.playback_mode = "both"
+        self._start_playback_clock(display_seconds)
         self._set_playhead(display_seconds)
         self.playback_timer.start()
         self.original_player.play()
@@ -659,6 +666,7 @@ class MainWindow(QMainWindow):
         self.midi_player.pause()
         self.original_player.setPosition(self._original_position_from_display_seconds(display_seconds))
         self.playback_mode = "original"
+        self._start_playback_clock(display_seconds)
         self._set_playhead(display_seconds)
         self.playback_timer.start()
         self.original_player.play()
@@ -672,6 +680,7 @@ class MainWindow(QMainWindow):
         self.original_player.setPosition(self._original_position_from_display_seconds(display_seconds))
         self.midi_player.setPosition(self._midi_position_from_display_seconds(display_seconds))
         self.playback_mode = "midi"
+        self._start_playback_clock(display_seconds)
         self._set_playhead(display_seconds)
         self.playback_timer.start()
         self.midi_player.play()
@@ -691,11 +700,33 @@ class MainWindow(QMainWindow):
         return max(0.0, current)
 
     def _current_display_seconds(self) -> float:
+        if self.playback_timer.isActive() and self.playback_clock_valid:
+            return self._estimated_display_seconds()
+        return self._reference_player_display_seconds()
+
+    def _reference_player_display_seconds(self) -> float:
         if self.playback_mode == "midi":
             return self._display_seconds_from_midi_position(self.midi_player.position())
         if self.playback_mode == "both" and self.original_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
             return self._display_seconds_from_midi_position(self.midi_player.position())
         return self._display_seconds_from_original_position(self.original_player.position())
+
+    def _start_playback_clock(self, display_seconds: float) -> None:
+        self.playback_clock_anchor_seconds = max(0.0, float(display_seconds))
+        self.playback_clock.restart()
+        self.playback_clock_valid = True
+        self.playback_sync_ticks = 0
+
+    def _estimated_display_seconds(self) -> float:
+        if not self.playback_clock_valid:
+            return self._reference_player_display_seconds()
+        return self._clamp_to_analysis_range(
+            self._interpolated_display_seconds(self.playback_clock_anchor_seconds, self.playback_clock.elapsed())
+        )
+
+    @staticmethod
+    def _interpolated_display_seconds(anchor_seconds: float, elapsed_ms: int) -> float:
+        return max(0.0, float(anchor_seconds)) + max(0.0, float(elapsed_ms)) / 1000.0
 
     def _display_seconds_from_original_position(self, position_ms: int) -> float:
         return max(0.0, float(position_ms) / 1000.0)
@@ -749,6 +780,7 @@ class MainWindow(QMainWindow):
         self.midi_player.pause()
         self.playback_mode = "paused"
         self.playback_timer.stop()
+        self.playback_clock_valid = False
         self._set_playhead(display_seconds)
         self._set_status("Playback paused")
 
@@ -757,6 +789,7 @@ class MainWindow(QMainWindow):
         self.midi_player.stop()
         self.playback_mode = "stopped"
         self.playback_timer.stop()
+        self.playback_clock_valid = False
         self._set_playhead(0.0)
         self._set_status("Playback stopped")
 
@@ -771,25 +804,37 @@ class MainWindow(QMainWindow):
     def _playback_state_changed(self, _state: QMediaPlayer.PlaybackState) -> None:
         if self.original_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             if not self.playback_timer.isActive():
+                self._start_playback_clock(self._reference_player_display_seconds())
                 self.playback_timer.start()
             return
         if self.midi_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             if not self.playback_timer.isActive():
+                self._start_playback_clock(self._reference_player_display_seconds())
                 self.playback_timer.start()
             return
+        display_seconds = self._current_display_seconds()
         self.playback_timer.stop()
-        self._set_playhead(self._current_display_seconds())
+        self.playback_clock_valid = False
+        self._set_playhead(display_seconds)
 
     def _sync_playback_tick(self) -> None:
-        if self.playback_mode == "midi":
-            display_seconds = self._display_seconds_from_midi_position(self.midi_player.position())
-        else:
-            display_seconds = self._display_seconds_from_original_position(self.original_player.position())
-            if self.playback_mode == "both":
-                self._sync_player_position(self.midi_player, self._midi_position_from_display_seconds(display_seconds))
+        display_seconds = self._estimated_display_seconds()
+        self.playback_sync_ticks += 1
+        if self.playback_sync_ticks >= 12:
+            display_seconds = self._maybe_resync_playback_clock(display_seconds)
+            self.playback_sync_ticks = 0
+        if self.playback_mode == "both":
+            self._sync_player_position(self.midi_player, self._midi_position_from_display_seconds(display_seconds))
         if self._stop_if_past_analysis_end(display_seconds):
             return
         self._set_playhead(display_seconds)
+
+    def _maybe_resync_playback_clock(self, estimated_display_seconds: float) -> float:
+        actual_display_seconds = self._reference_player_display_seconds()
+        if abs(actual_display_seconds - estimated_display_seconds) <= 0.12:
+            return estimated_display_seconds
+        self._start_playback_clock(actual_display_seconds)
+        return actual_display_seconds
 
     def _stop_if_past_analysis_end(self, display_seconds: float) -> bool:
         bounds = self._active_analysis_range()
@@ -802,6 +847,7 @@ class MainWindow(QMainWindow):
         self.midi_player.pause()
         self.playback_mode = "paused"
         self.playback_timer.stop()
+        self.playback_clock_valid = False
         self._set_playhead(end)
         self._set_status("Reached selected analysis range end")
         return True
