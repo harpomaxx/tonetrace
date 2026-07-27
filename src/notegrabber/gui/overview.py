@@ -78,8 +78,10 @@ def build_pitch_overview(
     scale = float(np.percentile(magnitudes, 98)) or float(magnitudes.max()) or 1.0
     normalized = np.clip(magnitudes / scale, 0.0, 1.0)
     frame_times = [float(index * hop_length / actual_sample_rate) for index in range(normalized.shape[0])]
-    activations = [[float(value) for value in row] for row in normalized.tolist()]
-    frame_times, activations = downsample_overview_frames(frame_times, activations, max_frames=max_frames)
+    # Max-pool on the numpy array while we still have it, then convert to lists
+    # once, instead of building nested lists and pooling them in Python.
+    frame_times, normalized = _downsample_overview_matrix(frame_times, normalized, max_frames=max_frames, np=np)
+    activations = normalized.tolist()
     return PitchOverview(
         frame_times=frame_times,
         midi_notes=list(range(min_midi, min_midi + bins)),
@@ -112,14 +114,41 @@ def downsample_overview_frames(
     return pooled_times, pooled_activations
 
 
+def _downsample_overview_matrix(
+    frame_times: list[float],
+    normalized: "object",
+    *,
+    max_frames: int,
+    np: "object",
+) -> tuple[list[float], "object"]:
+    """Max-pool consecutive time chunks of the ``(frame, band)`` numpy matrix.
+
+    Keeps the same chunking as :func:`downsample_overview_frames` (fixed ``step``
+    starting at frame 0, capped at ``max_frames``) but reduces each chunk with a
+    single vectorized ``np.max`` instead of a Python nested loop.
+    """
+
+    frame_count = len(frame_times)
+    if frame_count <= max_frames or max_frames <= 0:
+        return list(frame_times), normalized
+    step = max(1, frame_count // max_frames)
+    starts = list(range(0, frame_count, step))[:max_frames]
+    pooled_times = [frame_times[start] for start in starts]
+    pooled_rows = [normalized[start : start + step].max(axis=0) for start in starts]
+    return pooled_times, np.asarray(pooled_rows, dtype=normalized.dtype)
+
+
 def _max_pool_rows(rows: Iterable[list[float]]) -> list[float]:
-    iterator = iter(rows)
-    try:
-        pooled = [float(value) for value in next(iterator)]
-    except StopIteration:
+    materialized = [row for row in rows]
+    if not materialized:
         return []
-    for row in iterator:
-        for index, value in enumerate(row):
-            if index < len(pooled):
-                pooled[index] = max(pooled[index], float(value))
-    return pooled
+    try:
+        import numpy as np  # type: ignore[import-not-found]
+    except ModuleNotFoundError:
+        pooled = [float(value) for value in materialized[0]]
+        for row in materialized[1:]:
+            for index, value in enumerate(row):
+                if index < len(pooled):
+                    pooled[index] = max(pooled[index], float(value))
+        return pooled
+    return [float(value) for value in np.asarray(materialized, dtype=float).max(axis=0)]
