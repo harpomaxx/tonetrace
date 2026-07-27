@@ -15,7 +15,15 @@ Python package under `src/notegrabber/`:
 - `midi.py` — minimal Standard MIDI File writer.
 - `visualizer.py` — generates a self-contained browser viewer.
 - `server.py` — local upload/re-analysis web server for generating fresh viewers from selected files; renders MIDI audio previews by default when TiMidity++ is available.
-- `gui/` — PySide6 standalone GUI app with waveform, heatmap/piano-roll, controls, sequence table, background analysis worker, original/MIDI playback, note selection/delete, and MIDI export.
+- `gui/` — PySide6 standalone GUI app. Key modules:
+  - `main_window.py` — app shell: playback/playhead sync, note editing, analysis/preview orchestration.
+  - `state.py` — Qt-free models. `GuiHeatmap.activation_matrix()` lazily caches a numpy `(frame, note)` matrix for the paint path (pure-Python fallback when numpy is absent).
+  - `widgets/piano_roll.py` — heatmap + MIDI note map. Vectorized numpy paint; timeline spans the full song; frame indexing is offset-aware for range analyses.
+  - `widgets/waveform.py` — overview + pitch strip. Has a `left_gutter` matching the piano roll keyboard so both share one seconds→x mapping (playheads line up).
+  - `widgets/knob.py` — custom rotary `KnobWidget` (transcription controls). Emits `editingFinished` on commit (drag release / wheel / key); CQT retune is wired to that, not `valueChanged`, so dragging does not retune per tick.
+  - `widgets/controls.py`, `widgets/sequence.py`, `widgets/transport.py` — left controls, sequence table, transport bar.
+  - `analysis_worker.py`, `waveform_worker.py`, `overview_worker.py`, `midi_preview_worker.py` — background QThread workers. `midi_preview_worker` renders the edited-MIDI WAV off-thread; `main_window` debounces (~250ms) and supersedes stale renders via `render_id`.
+  - `theme.py` — dark pro-DAW stylesheet and button/icon helpers.
 
 Main commands:
 
@@ -70,7 +78,7 @@ Run tests:
 NOTEGRABBER_BIN=notegrabber python3 -m pytest -q
 ```
 
-Current expected result: **53 passed** when optional ML and PySide6 GUI dependencies are installed.
+Current expected result: **68 passed** when optional ML and PySide6 GUI dependencies are installed.
 
 Quick GUI manual check:
 
@@ -100,6 +108,7 @@ These are working artifacts, not core source code.
 
 ## Development notes
 
+- GitHub repo: `harpomaxx/tonetrace`; default branch is `main`. The performance backlog lives in [GitHub Issues](https://github.com/harpomaxx/tonetrace/issues) (the old in-repo `issues/` folder was removed). Open items: #5 (waveform paint numpy) and #6 (overview max-pool numpy); #1–#4 are fixed/closed.
 - Keep the existing CLI contract stable unless tests/docs are updated together.
 - Prefer adding tests before changing analysis behavior.
 - Do not commit generated caches: `.pytest_cache/`, `__pycache__/`, etc.
@@ -114,7 +123,7 @@ User priorities for the next work are **UI polish, speed/responsiveness, playbac
 
 1. **Playback/playhead synchronization polish**: smooth interpolated playhead sync is implemented for waveform + heatmap, with MIDI-follow correction during Play both. The resync loop checks drift every 12 ticks (~192ms) with a 120ms tolerance; a tighter cadence/tolerance was tried and reverted because `QMediaPlayer.position()` updates in coarse steps on this system's FFmpeg backend, causing visible backward playhead snaps. The interpolated clock also freezes while either `QMediaPlayer` reports `StalledMedia`/`BufferingMedia` so the playhead does not race ahead of stuttering audio. Range-analysis MIDI preview renders in a local timeline and maps back to the full-song waveform/heatmap timeline, clamping at the selected range end. Continue manual checks with edited MIDI preview and Qt audio backend edge cases, especially real stall/buffering behavior on large files.
 2. **Zoom/navigation polish**: note edits/clicks no longer compound the heatmap zoom by recalculating fit from the already-zoomed canvas. Pitch-row vertical zoom is implemented with Shift+wheel, and time zoom remains Ctrl+wheel; the left transcription box no longer contains zoom sliders. Continue improving horizontal zoom-out/in behavior, preserve cursor-centered zoom, add fit-to-range / fit-to-selection controls, and keep horizontal scroll position intuitive when zoom changes.
-3. **Speed/responsiveness**: waveform/heatmap playhead updates now repaint only narrow old/new playhead regions instead of redrawing the full canvases. Continue large-file UX work with progress detail, cancel analysis/overview jobs, optional overview/heatmap level-of-detail caching, and background/debounced MIDI-preview rendering if TiMidity rendering becomes noticeably slow.
+3. **Speed/responsiveness**: playhead updates repaint only narrow regions; the heatmap paint is vectorized via a cached numpy activation matrix (issue #1); per-drag note repaint is partial (issue #3); and the MIDI-preview render runs off-thread with debounce/supersede (issue #4). Remaining: waveform paint and overview build still use pure-Python loops (issues #5, #6 — share the numpy pattern); plus progress detail, cancel analysis/overview jobs, and optional overview/heatmap level-of-detail caching.
 4. **UI polish**: heatmap view height is now capped relative to the window so vertical pitch zoom does not hide the inspector/sequence area, and the left-panel action buttons are placed above reserved/stub controls so Open/Analyze/Delete/Export remain visible. Continue refining the ToneTrace dark pro-DAW layout, especially control density, selected-region affordances, selected-note editing affordances, and visual hierarchy between overview waveform, detail heatmap, and sequence table.
 5. **Editing workflow polish**: add keyboard nudging, undo/redo, and optional ghost previews during drag.
 6. **Output/workflow polish**: add native CSV/minimap parity where useful, project/session save-load, and maybe export browser-tuned notes if the browser workflow remains relevant.
