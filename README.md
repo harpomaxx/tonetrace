@@ -123,8 +123,9 @@ NOTEGRABBER_BIN=notegrabber python3 -m pytest -q
 ```
 
 See [`AGENTS.md`](AGENTS.md) for the architecture and contribution notes,
-[`FEATURES.md`](FEATURES.md) for the current feature list, and
-[`issues/`](issues/) for the tracked performance backlog.
+[`FEATURES.md`](FEATURES.md) for the current feature list, and the
+[GitHub issues](https://github.com/harpomaxx/tonetrace/issues) for the tracked
+performance backlog.
 
 ## Status & roadmap
 
