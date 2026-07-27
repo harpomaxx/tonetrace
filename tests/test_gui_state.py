@@ -135,6 +135,58 @@ def test_heatmap_document_round_trip_validates_dimensions() -> None:
 
 
 @pytest.mark.gui
+def test_activation_matrix_matches_accessor_and_is_clamped() -> None:
+    np = pytest.importorskip("numpy")
+
+    heatmap = GuiHeatmap(
+        backend="cqt",
+        midi_notes=[60, 61, 62],
+        frame_times=[0.0, 0.1],
+        # Include out-of-range values to confirm clamping to [0, 1].
+        activations=[[-0.2, 1.5, 0.5], [0.0, 0.3, 0.9]],
+        sample_rate=100,
+        hop_size=1,
+        window_size=1,
+    )
+
+    matrix = heatmap.activation_matrix()
+    assert matrix is not None
+    assert matrix.shape == (2, 3)
+    assert matrix.dtype == np.float32
+    # Every cell equals the pure-Python clamped accessor.
+    for frame in range(heatmap.frame_count):
+        for note in range(heatmap.note_count):
+            assert float(matrix[frame, note]) == pytest.approx(heatmap.activation(frame, note))
+    # Clamping applied.
+    assert float(matrix[0, 0]) == 0.0
+    assert float(matrix[0, 1]) == 1.0
+    # Cached: same object returned on the second call.
+    assert heatmap.activation_matrix() is matrix
+
+    # Computing the lazy matrix cache must not affect equality (compare=False).
+    clamped = GuiHeatmap(
+        backend="cqt",
+        midi_notes=[60, 61, 62],
+        frame_times=[0.0, 0.1],
+        activations=[[0.0, 1.0, 0.5], [0.0, 0.3, 0.9]],
+        sample_rate=100,
+        hop_size=1,
+        window_size=1,
+    )
+    twin = GuiHeatmap(
+        backend="cqt",
+        midi_notes=[60, 61, 62],
+        frame_times=[0.0, 0.1],
+        activations=[[0.0, 1.0, 0.5], [0.0, 0.3, 0.9]],
+        sample_rate=100,
+        hop_size=1,
+        window_size=1,
+    )
+    clamped.activation_matrix()  # populate one side's cache only
+    assert clamped == twin
+
+
+@pytest.mark.gui
 def test_heatmap_document_rejects_bad_activation_width() -> None:
     with pytest.raises(ValueError, match="activation count"):
         heatmap_from_document(

@@ -43,6 +43,16 @@ from .widgets.waveform import WaveformWidget
 class MainWindow(QMainWindow):
     """NeuralNote-inspired standalone app shell."""
 
+    PLAYBACK_RESYNC_TICKS = 12
+    # QMediaPlayer.position() lags the audible position on buffered backends
+    # (FFmpeg/GStreamer report the start of the current decode buffer), so it is
+    # normally *behind* the smooth elapsed-timer estimate. We must not snap the
+    # playhead backward to chase that lag, or the line stutters back every resync.
+    # Only correct when the player is ahead of us (a real seek/underrun pushed
+    # true time forward) or drift is far too large to be ordinary backend lag.
+    PLAYBACK_RESYNC_AHEAD_TOLERANCE_SECONDS = 0.08
+    PLAYBACK_RESYNC_MAX_LAG_SECONDS = 0.5
+
     def __init__(self, *, initial_backend: BackendName = "basic-pitch", render_midi: bool = True) -> None:
         super().__init__()
         self.state = ProjectState(backend=initial_backend)
@@ -59,6 +69,8 @@ class MainWindow(QMainWindow):
         self.playback_clock_anchor_seconds = 0.0
         self.playback_clock_valid = False
         self.playback_sync_ticks = 0
+        self.playback_stalled = False
+        self._suppress_reactive_playhead = False
 
         self.setWindowTitle("ToneTrace")
         self.resize(1280, 820)
@@ -228,6 +240,8 @@ class MainWindow(QMainWindow):
         self.midi_player.positionChanged.connect(self._midi_position_changed)
         self.original_player.playbackStateChanged.connect(self._playback_state_changed)
         self.midi_player.playbackStateChanged.connect(self._playback_state_changed)
+        self.original_player.mediaStatusChanged.connect(self._media_status_changed)
+        self.midi_player.mediaStatusChanged.connect(self._media_status_changed)
         self.playback_timer.timeout.connect(self._sync_playback_tick)
         self.waveform.seek_requested.connect(self._seek_seconds)
         self.waveform.range_selected.connect(self._set_analysis_range_from_waveform)
@@ -437,7 +451,7 @@ class MainWindow(QMainWindow):
             self._set_status("Basic Pitch threshold changes require Analyze to rerun the ML model for now.")
 
     def _set_display_notes(self, notes: list[GuiMidiNote]) -> None:
-        self.piano_roll.set_data(self.state.heatmap, notes)
+        self.piano_roll.set_data(self.state.heatmap, notes, full_duration_seconds=self.waveform.duration_seconds())
         self.sequence.set_notes(notes)
         self.controls.set_can_export(self.state.heatmap is not None)
 
@@ -520,13 +534,20 @@ class MainWindow(QMainWindow):
             velocity=velocity,
         )
         self.selected_note_index = index
+        if not update_preview:
+            # Uncommitted drag: update just the dragged note with a partial
+            # repaint and refresh the inspector, skipping the full set_data
+            # (canvas resize + full repaint) and the sequence-table rebuild.
+            edited_note = self.state.tuned_notes[index]
+            self.piano_roll.preview_note_edit(index, edited_note)
+            self._populate_note_inspector(edited_note)
+            self.selected_note_label.setText(self._note_summary(edited_note))
+            self._set_status(f"Editing selected note… release to update MIDI preview. Export writes {len(self.state.tuned_notes)} edited notes.")
+            return
         self._set_display_notes(self.state.tuned_notes)
         self._select_note(index)
-        if update_preview:
-            preview_status = self._refresh_midi_preview(self.state.tuned_notes)
-            self._set_status(f"{status_prefix}. Export writes {len(self.state.tuned_notes)} edited notes.{preview_status}")
-        else:
-            self._set_status(f"Editing selected note… release to update MIDI preview. Export writes {len(self.state.tuned_notes)} edited notes.")
+        preview_status = self._refresh_midi_preview(self.state.tuned_notes)
+        self._set_status(f"{status_prefix}. Export writes {len(self.state.tuned_notes)} edited notes.{preview_status}")
 
     def _refresh_midi_preview(self, notes: list[GuiMidiNote]) -> str:
         if not self.render_midi:
@@ -716,6 +737,7 @@ class MainWindow(QMainWindow):
         self.playback_clock.restart()
         self.playback_clock_valid = True
         self.playback_sync_ticks = 0
+        self.playback_stalled = False
 
     def _estimated_display_seconds(self) -> float:
         if not self.playback_clock_valid:
@@ -776,32 +798,44 @@ class MainWindow(QMainWindow):
 
     def _pause_playback(self) -> None:
         display_seconds = self._current_display_seconds()
+        self._suppress_reactive_playhead = True
         self.original_player.pause()
         self.midi_player.pause()
+        self._suppress_reactive_playhead = False
         self.playback_mode = "paused"
         self.playback_timer.stop()
         self.playback_clock_valid = False
+        self.playback_stalled = False
         self._set_playhead(display_seconds)
         self._set_status("Playback paused")
 
     def _stop_playback(self) -> None:
+        self._suppress_reactive_playhead = True
         self.original_player.stop()
         self.midi_player.stop()
+        self._suppress_reactive_playhead = False
         self.playback_mode = "stopped"
         self.playback_timer.stop()
         self.playback_clock_valid = False
+        self.playback_stalled = False
         self._set_playhead(0.0)
         self._set_status("Playback stopped")
 
     def _playback_position_changed(self, milliseconds: int) -> None:
+        if self._suppress_reactive_playhead:
+            return
         if not self.playback_timer.isActive() and self.playback_mode != "midi":
             self._set_playhead(self._display_seconds_from_original_position(milliseconds))
 
     def _midi_position_changed(self, milliseconds: int) -> None:
+        if self._suppress_reactive_playhead:
+            return
         if not self.playback_timer.isActive() and self.playback_mode == "midi":
             self._set_playhead(self._display_seconds_from_midi_position(milliseconds))
 
     def _playback_state_changed(self, _state: QMediaPlayer.PlaybackState) -> None:
+        if self._suppress_reactive_playhead:
+            return
         if self.original_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             if not self.playback_timer.isActive():
                 self._start_playback_clock(self._reference_player_display_seconds())
@@ -818,9 +852,11 @@ class MainWindow(QMainWindow):
         self._set_playhead(display_seconds)
 
     def _sync_playback_tick(self) -> None:
+        if self.playback_stalled:
+            return
         display_seconds = self._estimated_display_seconds()
         self.playback_sync_ticks += 1
-        if self.playback_sync_ticks >= 12:
+        if self.playback_sync_ticks >= self.PLAYBACK_RESYNC_TICKS:
             display_seconds = self._maybe_resync_playback_clock(display_seconds)
             self.playback_sync_ticks = 0
         if self.playback_mode == "both":
@@ -831,10 +867,53 @@ class MainWindow(QMainWindow):
 
     def _maybe_resync_playback_clock(self, estimated_display_seconds: float) -> float:
         actual_display_seconds = self._reference_player_display_seconds()
-        if abs(actual_display_seconds - estimated_display_seconds) <= 0.12:
-            return estimated_display_seconds
-        self._start_playback_clock(actual_display_seconds)
-        return actual_display_seconds
+        drift = actual_display_seconds - estimated_display_seconds
+        if self._resync_drift_needs_correction(drift):
+            self._start_playback_clock(actual_display_seconds)
+            return actual_display_seconds
+        return estimated_display_seconds
+
+    @classmethod
+    def _resync_drift_needs_correction(cls, drift_seconds: float) -> bool:
+        """Return True only for drift the interpolation clock should chase.
+
+        ``drift_seconds`` is player position minus interpolated estimate.
+
+        * Positive drift (player ahead of us) means true playback jumped forward
+          from a seek/underrun; correct once it clears the small ahead tolerance.
+        * Small negative drift is ordinary backend position lag; ignore it so the
+          playhead never stutters backward.
+        * Very large negative drift is a genuine desync (e.g. we ran past the end
+          of media while the player rewound), so still correct past the lag cap.
+        """
+
+        if drift_seconds > cls.PLAYBACK_RESYNC_AHEAD_TOLERANCE_SECONDS:
+            return True
+        return drift_seconds < -cls.PLAYBACK_RESYNC_MAX_LAG_SECONDS
+
+    def _media_status_changed(self, _status: QMediaPlayer.MediaStatus) -> None:
+        """Freeze the interpolated clock while either player is buffering/stalled.
+
+        Qt Multimedia can pause audio output on a stall without emitting a
+        playbackStateChanged transition, so without this the interpolated
+        playhead keeps advancing ahead of audio that has actually stopped.
+        """
+
+        relevant_statuses = {
+            QMediaPlayer.MediaStatus.StalledMedia,
+            QMediaPlayer.MediaStatus.BufferingMedia,
+        }
+        stalled = (
+            self.original_player.mediaStatus() in relevant_statuses
+            or self.midi_player.mediaStatus() in relevant_statuses
+        )
+        if stalled == self.playback_stalled:
+            return
+        self.playback_stalled = stalled
+        if stalled:
+            return
+        if self.playback_timer.isActive():
+            self._start_playback_clock(self._reference_player_display_seconds())
 
     def _stop_if_past_analysis_end(self, display_seconds: float) -> bool:
         bounds = self._active_analysis_range()
@@ -843,11 +922,14 @@ class MainWindow(QMainWindow):
         _start, end = bounds
         if display_seconds < end:
             return False
+        self._suppress_reactive_playhead = True
         self.original_player.pause()
         self.midi_player.pause()
+        self._suppress_reactive_playhead = False
         self.playback_mode = "paused"
         self.playback_timer.stop()
         self.playback_clock_valid = False
+        self.playback_stalled = False
         self._set_playhead(end)
         self._set_status("Reached selected analysis range end")
         return True
@@ -864,6 +946,36 @@ class MainWindow(QMainWindow):
         clamped_seconds = max(0.0, min(float(seconds), self._shared_duration_ms() / 1000.0 if self._shared_duration_ms() > 0 else float(seconds)))
         self.waveform.set_playhead(clamped_seconds)
         self.piano_roll.set_playhead(clamped_seconds)
+        self._follow_playhead_in_piano_scroll(clamped_seconds)
+
+    def _follow_playhead_in_piano_scroll(self, seconds: float) -> None:
+        """Keep the moving playhead visible when zoomed in past the viewport.
+
+        Only scrolls during active playback and only when the canvas is wider
+        than the viewport. Uses a margin band so the scrollbar re-targets when
+        the playhead nears an edge instead of moving every frame.
+        """
+
+        if not hasattr(self, "piano_scroll") or not self.playback_timer.isActive():
+            return
+        scrollbar = self.piano_scroll.horizontalScrollBar()
+        if scrollbar is None or scrollbar.maximum() <= 0:
+            return
+        viewport_width = self.piano_scroll.viewport().width()
+        if viewport_width <= 0:
+            return
+        playhead_x = self.piano_roll.x_for_seconds(seconds)
+        offset = scrollbar.value()
+        visible_left = offset + self.piano_roll.keyboard_width
+        right_margin = max(48, viewport_width // 8)
+        visible_right = offset + viewport_width - right_margin
+        # When the playhead leaves the comfortable band, re-anchor it a quarter
+        # of the way in so there is room to advance before the next scroll,
+        # avoiding a per-frame scrollbar update.
+        if playhead_x < visible_left or playhead_x > visible_right:
+            lead_in = max(self.piano_roll.keyboard_width, viewport_width // 4)
+            target = playhead_x - lead_in
+            scrollbar.setValue(max(0, min(scrollbar.maximum(), target)))
 
     def _export_midi_dialog(self) -> None:
         notes = self.state.current_notes

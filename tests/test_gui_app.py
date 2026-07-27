@@ -61,6 +61,120 @@ def test_playback_sync_helpers_keep_waveform_and_heatmap_playheads_together() ->
 
 
 @pytest.mark.gui
+def test_resync_ignores_backend_lag_but_chases_forward_jumps() -> None:
+    pytest.importorskip("PySide6")
+
+    from notegrabber.gui.main_window import MainWindow
+
+    # Player position lagging behind the interpolated estimate (drift < 0) is
+    # ordinary buffered-backend lag and must never pull the playhead backward.
+    small_lag = -(MainWindow.PLAYBACK_RESYNC_MAX_LAG_SECONDS / 2)
+    assert MainWindow._resync_drift_needs_correction(small_lag) is False
+    assert MainWindow._resync_drift_needs_correction(-0.0) is False
+
+    # A player that has jumped ahead of us (drift > 0) past the ahead tolerance,
+    # or lag so large it cannot be ordinary buffering, is a real desync to chase.
+    ahead = MainWindow.PLAYBACK_RESYNC_AHEAD_TOLERANCE_SECONDS + 0.01
+    assert MainWindow._resync_drift_needs_correction(ahead) is True
+    huge_lag = -(MainWindow.PLAYBACK_RESYNC_MAX_LAG_SECONDS + 0.01)
+    assert MainWindow._resync_drift_needs_correction(huge_lag) is True
+
+    # A tiny forward drift within the ahead tolerance stays smooth (no snap).
+    tiny_ahead = MainWindow.PLAYBACK_RESYNC_AHEAD_TOLERANCE_SECONDS / 2
+    assert MainWindow._resync_drift_needs_correction(tiny_ahead) is False
+
+
+@pytest.mark.gui
+def test_maybe_resync_does_not_snap_playhead_backward_on_position_lag() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+
+    window.playback_mode = "original"
+    window._start_playback_clock(5.0)
+
+    # Interpolated estimate has advanced to 5.30s; the backend still reports a
+    # lagging 5.10s. The estimate must be kept, not snapped back to 5.10s.
+    window._reference_player_display_seconds = lambda: 5.10  # type: ignore[method-assign]
+    resynced = window._maybe_resync_playback_clock(5.30)
+    assert resynced == pytest.approx(5.30)
+    assert window.playback_clock_anchor_seconds == pytest.approx(5.0)
+
+    # A real forward jump (seek) to 8.0s is chased.
+    window._reference_player_display_seconds = lambda: 8.0  # type: ignore[method-assign]
+    resynced = window._maybe_resync_playback_clock(5.30)
+    assert resynced == pytest.approx(8.0)
+    assert window.playback_clock_anchor_seconds == pytest.approx(8.0)
+
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_sync_playback_tick_resyncs_after_configured_tick_count() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+
+    window.playback_mode = "original"
+    window._start_playback_clock(0.0)
+    window.playback_clock_anchor_seconds = 999.0
+    window._reference_player_display_seconds = lambda: 0.0  # type: ignore[method-assign]
+
+    for _ in range(window.PLAYBACK_RESYNC_TICKS - 1):
+        window._sync_playback_tick()
+    assert window.playback_sync_ticks == window.PLAYBACK_RESYNC_TICKS - 1
+    assert window.playback_clock_anchor_seconds == pytest.approx(999.0)
+
+    window._sync_playback_tick()
+    assert window.playback_sync_ticks == 0
+    assert window.playback_clock_anchor_seconds == pytest.approx(0.0, abs=1e-6)
+
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_media_status_changed_freezes_and_resumes_the_interpolated_clock() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtMultimedia import QMediaPlayer
+    from notegrabber.gui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+
+    window.playback_mode = "original"
+    window.playback_timer.start()
+    window._start_playback_clock(2.0)
+    assert window.playback_stalled is False
+
+    window.playback_stalled = True
+    anchor_before = window.playback_clock_anchor_seconds
+    window._sync_playback_tick()
+    assert window.playback_clock_anchor_seconds == pytest.approx(anchor_before)
+
+    window._media_status_changed(QMediaPlayer.MediaStatus.BufferedMedia)
+    assert window.playback_stalled is False
+
+    window.playback_timer.stop()
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
 def test_range_midi_preview_maps_local_time_to_full_song_timeline() -> None:
     pytest.importorskip("PySide6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -404,6 +518,131 @@ def test_piano_roll_horizontal_zoom_expands_timeline_offscreen() -> None:
 
 
 @pytest.mark.gui
+def test_playhead_follow_scroll_keeps_playhead_visible_when_zoomed_offscreen() -> None:
+    """When zoomed in past the viewport, the scroll area follows the playhead."""
+
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.main_window import MainWindow
+    from notegrabber.gui.state import GuiHeatmap
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+    window.resize(1200, 800)
+    window.show()
+    app.processEvents()
+    window.waveform.set_preview([0.0, 0.1], sample_rate=1, duration_seconds=60.0)
+
+    frame_times = [i * 0.05 for i in range(1200)]
+    midi_notes = list(range(21, 109))
+    heatmap = GuiHeatmap(
+        backend="cqt",
+        midi_notes=midi_notes,
+        frame_times=frame_times,
+        activations=[[0.0] * len(midi_notes) for _ in frame_times],
+        sample_rate=22_050,
+        hop_size=512,
+        window_size=2_048,
+    )
+    window.state.heatmap = heatmap
+    window._set_display_notes([])
+    window.piano_roll.set_horizontal_zoom(16.0)
+    app.processEvents()
+
+    scrollbar = window.piano_scroll.horizontalScrollBar()
+    assert scrollbar.maximum() > 0  # canvas is wider than the viewport
+
+    # Not playing: following must be a no-op so manual scrolling is respected.
+    scrollbar.setValue(0)
+    window._set_playhead(30.0)
+    assert scrollbar.value() == 0
+
+    # Playing: advancing the playhead keeps it inside the viewport, and the
+    # scrollbar updates in jumps rather than on every single tick.
+    window.playback_mode = "original"
+    window.playback_timer.start()
+    scroll_updates = 0
+    previous = scrollbar.value()
+    visible_ticks = 0
+    ticks = [i * 0.2 for i in range(300)]
+    for seconds in ticks:
+        window._set_playhead(seconds)
+        x = window.piano_roll.x_for_seconds(seconds)
+        viewport_width = window.piano_scroll.viewport().width()
+        if scrollbar.value() + window.piano_roll.keyboard_width <= x <= scrollbar.value() + viewport_width:
+            visible_ticks += 1
+        if scrollbar.value() != previous:
+            scroll_updates += 1
+            previous = scrollbar.value()
+    window.playback_timer.stop()
+
+    assert visible_ticks == len(ticks)
+    assert scroll_updates < len(ticks) // 4  # re-anchors in jumps, not per frame
+
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_piano_roll_full_song_timeline_keeps_canvas_bounded_for_huge_files_offscreen() -> None:
+    """A short range analysed inside a very long file must not create a giant canvas.
+
+    Fitting to the full-song duration (not the analysed range) keeps the canvas
+    roughly viewport-sized at zoom 1.0 regardless of file length, while still
+    placing the range on the same time->x scale as the waveform overview.
+    """
+
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication, QScrollArea
+    from notegrabber.gui.state import GuiHeatmap, GuiMidiNote
+    from notegrabber.gui.widgets.piano_roll import PianoRollWidget
+
+    app = QApplication.instance() or QApplication([])
+    scroll = QScrollArea()
+    widget = PianoRollWidget()
+    scroll.setWidget(widget)
+    scroll.setWidgetResizable(True)
+    scroll.resize(1000, 500)
+    scroll.show()
+    app.processEvents()
+
+    # 10 s of heatmap frames from a 1-hour recording.
+    frame_times = [i * 0.05 for i in range(200)]
+    midi_notes = list(range(21, 109))
+    heatmap = GuiHeatmap(
+        backend="basic-pitch",
+        midi_notes=midi_notes,
+        frame_times=frame_times,
+        activations=[[0.0] * len(midi_notes) for _ in frame_times],
+        sample_rate=22_050,
+        hop_size=512,
+        window_size=2_048,
+    )
+    notes = [GuiMidiNote(pitch=60, start_seconds=2.0, duration_seconds=0.5, velocity=90)]
+
+    full_song_seconds = 3_600.0
+    widget.set_data(heatmap, notes, full_duration_seconds=full_song_seconds)
+
+    assert widget._timeline_duration_seconds() == pytest.approx(full_song_seconds)
+    # Canvas at fit stays near the viewport width, not hundreds of viewports wide.
+    fit_available = widget._fit_available_width()
+    assert widget.width() <= fit_available + widget.keyboard_width + 200
+    # Even fully zoomed in the width is bounded by the 32x zoom cap, not duration.
+    widget.set_horizontal_zoom(32.0)
+    assert widget.width() <= 33 * (fit_available + widget.keyboard_width + 200)
+
+    # Whole-file analysis (full duration == heatmap duration) is unchanged.
+    widget.set_horizontal_zoom(1.0)
+    widget.set_data(heatmap, notes, full_duration_seconds=heatmap.duration_seconds)
+    assert widget._timeline_duration_seconds() == pytest.approx(heatmap.duration_seconds)
+    app.processEvents()
+
+
+@pytest.mark.gui
 def test_piano_roll_note_updates_do_not_compound_zoom_offscreen() -> None:
     pytest.importorskip("PySide6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -551,7 +790,72 @@ def test_piano_roll_large_heatmap_paint_aggregates_visible_columns_offscreen() -
     finally:
         painter.end()
 
+    # Bounded by visible pixels, never O(frames x notes). With numpy present the
+    # vectorized path avoids the per-cell accessor entirely (calls == 0); the
+    # pure-Python fallback still stays well under half the full cell count.
     assert calls < frame_count * note_count // 2
+    if heatmap.activation_matrix() is not None:
+        assert calls == 0
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_heatmap_numpy_and_fallback_paths_draw_equivalently_offscreen() -> None:
+    """The vectorized numpy paint matches the pure-Python fallback (±1 color LSB)."""
+
+    pytest.importorskip("PySide6")
+    np = pytest.importorskip("numpy")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    import random
+
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.state import GuiHeatmap
+    from notegrabber.gui.widgets.piano_roll import PianoRollWidget
+
+    app = QApplication.instance() or QApplication([])
+    random.seed(7)
+    frame_times = [i * 0.05 for i in range(150)]
+    midi_notes = list(range(48, 72))
+    activations = [
+        [round(random.random(), 3) if random.random() < 0.3 else 0.0 for _ in midi_notes]
+        for _ in frame_times
+    ]
+
+    def render(force_fallback: bool, zoom: float) -> QImage:
+        heatmap = GuiHeatmap(
+            backend="cqt",
+            midi_notes=midi_notes,
+            frame_times=frame_times,
+            activations=activations,
+            sample_rate=10,
+            hop_size=1,
+            window_size=1,
+        )
+        widget = PianoRollWidget()
+        widget.resize(1200, 400)
+        widget.set_data(heatmap, [], full_duration_seconds=heatmap.duration_seconds)
+        widget.set_horizontal_zoom(zoom)
+        if force_fallback:
+            object.__setattr__(heatmap, "_activation_matrix", None)
+        image = QImage(widget.width(), widget.height(), QImage.Format.Format_ARGB32)
+        image.fill(0)
+        widget.render(image)
+        return image
+
+    for zoom in (1.0, 8.0):  # exercises both the columns and frames paths
+        numpy_image = render(False, zoom)
+        fallback_image = render(True, zoom)
+        a = np.frombuffer(bytes(numpy_image.constBits()), dtype=np.uint8).astype(np.int16)
+        b = np.frombuffer(bytes(fallback_image.constBits()), dtype=np.uint8).astype(np.int16)
+        assert a.shape == b.shape
+        # Only sub-LSB float32-vs-float64 color rounding may differ, never a
+        # missing/extra cell: every channel within 1, and almost all identical.
+        max_channel_diff = int(np.abs(a - b).max())
+        differing_fraction = float((a != b).mean())
+        assert max_channel_diff <= 1
+        assert differing_fraction < 0.01
     app.processEvents()
 
 
@@ -703,6 +1007,77 @@ def test_piano_roll_drag_signal_updates_main_window_note_offscreen() -> None:
     assert window.state.current_notes[0].start_seconds == pytest.approx(0.1)
     assert window.state.current_notes[0].duration_seconds == pytest.approx(0.4)
     assert window.selected_note_index == 0
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_uncommitted_drag_uses_lightweight_preview_path_offscreen() -> None:
+    """An in-progress (uncommitted) drag must not run the full set_data/preview path."""
+
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.main_window import MainWindow
+    from notegrabber.gui.state import GuiHeatmap, GuiMidiNote
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+    window.state.heatmap = GuiHeatmap(
+        backend="basic-pitch",
+        midi_notes=[60, 61, 62, 63, 64],
+        frame_times=[0.0, 0.1],
+        activations=[[0.9, 0.8, 0.7, 0.6, 0.5], [0.7, 0.6, 0.5, 0.4, 0.3]],
+        sample_rate=10,
+        hop_size=1,
+        window_size=1,
+    )
+    window.state.extracted_notes = [GuiMidiNote(pitch=60, start_seconds=0.0, duration_seconds=0.5, velocity=90)]
+    window._set_display_notes(window.state.extracted_notes)
+    window._select_note(0)
+
+    set_data_calls = 0
+    set_notes_calls = 0
+    preview_note_edit_calls = 0
+    original_set_data = window.piano_roll.set_data
+    original_set_notes = window.sequence.set_notes
+    original_preview = window.piano_roll.preview_note_edit
+
+    def counting_set_data(*args, **kwargs):
+        nonlocal set_data_calls
+        set_data_calls += 1
+        return original_set_data(*args, **kwargs)
+
+    def counting_set_notes(*args, **kwargs):
+        nonlocal set_notes_calls
+        set_notes_calls += 1
+        return original_set_notes(*args, **kwargs)
+
+    def counting_preview(*args, **kwargs):
+        nonlocal preview_note_edit_calls
+        preview_note_edit_calls += 1
+        return original_preview(*args, **kwargs)
+
+    window.piano_roll.set_data = counting_set_data  # type: ignore[method-assign]
+    window.sequence.set_notes = counting_set_notes  # type: ignore[method-assign]
+    window.piano_roll.preview_note_edit = counting_preview  # type: ignore[method-assign]
+
+    # Uncommitted drag move: lightweight path only.
+    window._edit_note_from_piano_roll(0, 0.2, 0.3, 61, 90, committed=False)
+    assert set_data_calls == 0
+    assert set_notes_calls == 0
+    assert preview_note_edit_calls == 1
+    # State and inspector still reflect the edit.
+    assert window.state.current_notes[0].pitch == 61
+    assert window.state.current_notes[0].start_seconds == pytest.approx(0.2)
+    assert window.note_pitch_spin.value() == 61
+
+    # Commit (release) runs the full path once.
+    window._edit_note_from_piano_roll(0, 0.2, 0.3, 61, 90, committed=True)
+    assert set_data_calls == 1
+    assert set_notes_calls == 1
+
     window.close()
     app.processEvents()
 

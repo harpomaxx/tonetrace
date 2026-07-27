@@ -41,7 +41,14 @@ class GuiMidiNote:
 
 @dataclass(frozen=True)
 class GuiHeatmap:
-    """Pitch salience heatmap ready for GUI drawing."""
+    """Pitch salience heatmap ready for GUI drawing.
+
+    ``activations`` (a ``list[list[float]]``) stays the source of truth so this
+    model has no hard numpy dependency and JSON export/round-trip is unchanged.
+    For the hot paint path, :meth:`activation_matrix` lazily builds a cached
+    numpy ``float32`` array of shape ``(frame_count, note_count)`` so the piano
+    roll can reduce whole columns/rows in C instead of per-cell Python calls.
+    """
 
     backend: str
     midi_notes: list[int]
@@ -50,6 +57,9 @@ class GuiHeatmap:
     sample_rate: int
     hop_size: int
     window_size: int
+    # Lazily-populated numpy cache; excluded from equality/repr/hash. Sentinel
+    # ``False`` means "not computed yet"; ``None`` means "numpy unavailable".
+    _activation_matrix: Any = field(default=False, compare=False, repr=False, hash=False)
 
     @property
     def frame_count(self) -> int:
@@ -76,6 +86,29 @@ class GuiHeatmap:
         if note_index < 0 or note_index >= len(row):
             return 0.0
         return max(0.0, min(1.0, float(row[note_index])))
+
+    def activation_matrix(self) -> Any:
+        """Return a cached numpy (frame, note) float32 matrix, or None.
+
+        Returns ``None`` when numpy is not installed so callers fall back to the
+        pure-Python :meth:`activation` accessor.  The matrix is clamped to
+        ``[0, 1]`` to match :meth:`activation`.
+        """
+
+        if self._activation_matrix is not False:
+            return self._activation_matrix
+        try:
+            import numpy as np  # type: ignore[import-not-found]
+        except Exception:
+            object.__setattr__(self, "_activation_matrix", None)
+            return None
+        if not self.activations:
+            matrix = np.zeros((0, self.note_count), dtype=np.float32)
+        else:
+            matrix = np.asarray(self.activations, dtype=np.float32)
+            np.clip(matrix, 0.0, 1.0, out=matrix)
+        object.__setattr__(self, "_activation_matrix", matrix)
+        return matrix
 
 
 MIN_GUI_NOTE_DURATION_SECONDS = 0.001

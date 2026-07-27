@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 from PySide6.QtCore import QRect, QSize, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
@@ -24,6 +25,8 @@ class PianoRollWidget(QWidget):
         super().__init__(parent)
         self.heatmap: GuiHeatmap | None = None
         self.notes: list[GuiMidiNote] = []
+        self.full_duration_seconds = 0.0
+        self._pitch_to_row: dict[int, int] = {}
         self.show_notes = True
         self.selected_note_index: int | None = None
         self.hover_note_index: int | None = None
@@ -50,25 +53,60 @@ class PianoRollWidget(QWidget):
         self.setToolTip("Click notes to select. Drag note bodies to move time/pitch; drag edges to resize. Ctrl+wheel zooms time; Shift+wheel changes note height.")
         self.setMinimumSize(self.minimum_canvas_width, self.minimum_canvas_height)
 
-    def set_data(self, heatmap: GuiHeatmap | None, notes: list[GuiMidiNote]) -> None:
-        """Update heatmap and notes."""
+    def set_data(
+        self,
+        heatmap: GuiHeatmap | None,
+        notes: list[GuiMidiNote],
+        full_duration_seconds: float | None = None,
+    ) -> None:
+        """Update heatmap and notes.
+
+        ``full_duration_seconds`` is the full-song duration the timeline should
+        span, so a range analysis inside a long file shares one time->x scale
+        with the waveform overview.  It defaults to the heatmap duration, which
+        keeps whole-file analysis unchanged.  Crucially, fitting to the full song
+        (not the analysed range) keeps the canvas width bounded to roughly the
+        viewport at zoom 1.0 for any file length, so huge MP3s do not create a
+        giant widget.
+        """
 
         heatmap_changed = heatmap is not self.heatmap
         self.heatmap = heatmap
         self.notes = notes
+        self.full_duration_seconds = max(0.0, float(full_duration_seconds or 0.0))
+        if heatmap_changed:
+            # Cache the pitch -> row lookup so per-note draw and per-mousemove
+            # hit-testing do not rebuild this dict on every call.
+            self._pitch_to_row = (
+                {pitch: index for index, pitch in enumerate(heatmap.midi_notes)}
+                if heatmap is not None
+                else {}
+            )
         if self.selected_note_index is not None and self.selected_note_index >= len(notes):
             self.selected_note_index = None
         if self.hover_note_index is not None and self.hover_note_index >= len(notes):
             self.hover_note_index = None
             self.hover_mode = None
         if heatmap is not None and heatmap_changed:
-            duration = max(heatmap.duration_seconds, max((note.end_seconds for note in notes), default=0.0), 1.0)
+            duration = self._timeline_duration_seconds()
             available_width = self._fit_available_width()
             self.fit_seconds_per_pixel = max(0.0005, duration / available_width)
             self.seconds_per_pixel = max(0.0005, self.fit_seconds_per_pixel / self.horizontal_zoom)
         self._update_canvas_size()
         self.updateGeometry()
         self.update()
+
+    def _timeline_duration_seconds(self) -> float:
+        """Total time span the canvas represents (full song when known)."""
+
+        if self.heatmap is None:
+            return max(self.full_duration_seconds, 1.0)
+        return max(
+            self.full_duration_seconds,
+            self.heatmap.duration_seconds,
+            max((note.end_seconds for note in self.notes), default=0.0),
+            1.0,
+        )
 
     def sizeHint(self) -> QSize:  # noqa: N802 - Qt API
         return QSize(self.minimumWidth(), self.minimumHeight())
@@ -86,7 +124,7 @@ class PianoRollWidget(QWidget):
             self.setMinimumSize(self.minimum_canvas_width, self.minimum_canvas_height)
             return
         full_note_height = max(self.minimum_canvas_height, self.heatmap.note_count * self.note_height)
-        duration = max(self.heatmap.duration_seconds, max((note.end_seconds for note in self.notes), default=0.0), 1.0)
+        duration = self._timeline_duration_seconds()
         full_time_width = self.keyboard_width + int(duration / self.seconds_per_pixel) + 32
         self.setMinimumSize(max(self.minimum_canvas_width, full_time_width), full_note_height)
         # QScrollArea grows the child eagerly when minimumSize increases, but it
@@ -116,6 +154,37 @@ class PianoRollWidget(QWidget):
         self.show_notes = enabled
         self.update()
 
+    def preview_note_edit(self, index: int, note: GuiMidiNote) -> None:
+        """Update a single note in place with a partial repaint.
+
+        Used during an uncommitted drag so intermediate moves do not run the full
+        ``set_data`` path (canvas resize + full-canvas repaint + sequence-table
+        rebuild). Only the old and new note rectangles are repainted.
+        """
+
+        if index < 0 or index >= len(self.notes) or self.heatmap is None:
+            return
+        old_rect = self._note_rect(self.notes[index])
+        self.notes[index] = note
+        new_rect = self._note_rect(note)
+        dirty = self._union_note_dirty_rect(old_rect, new_rect)
+        if dirty is None:
+            self.update()
+        else:
+            self.update(dirty)
+
+    def _union_note_dirty_rect(self, *rects: QRectF | None) -> QRect | None:
+        """Union note rects into an inflated integer repaint region."""
+
+        region: QRect | None = None
+        for rect in rects:
+            if rect is None:
+                continue
+            # Inflate for the 2px selection outline and resize handles.
+            inflated = rect.toRect().adjusted(-4, -4, 4, 4)
+            region = inflated if region is None else region.united(inflated)
+        return region
+
     def set_selected_note_index(self, index: int | None) -> None:
         """Select a note by current note-list index."""
 
@@ -135,6 +204,11 @@ class PianoRollWidget(QWidget):
     def _playhead_update_rect(self, seconds: float) -> QRect:
         x = int(self.keyboard_width + max(0.0, seconds) / self.seconds_per_pixel)
         return QRect(max(0, x - 3), 0, 7, self.height())
+
+    def x_for_seconds(self, seconds: float) -> int:
+        """Return the canvas x pixel for a time in seconds (keyboard offset included)."""
+
+        return int(self.keyboard_width + max(0.0, seconds) / self.seconds_per_pixel)
 
     def wheelEvent(self, event) -> None:  # noqa: N802 - Qt API
         if self.heatmap is not None and event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
@@ -296,6 +370,8 @@ class PianoRollWidget(QWidget):
         assert self.heatmap is not None
         first_frame = max(0, self._frame_index_at_x(left) - 1)
         last_frame = min(self.heatmap.frame_count, self._frame_index_at_x(right) + 2)
+        matrix = self.heatmap.activation_matrix()
+        note_count = self.heatmap.note_count
         for frame_index in range(first_frame, last_frame):
             time_seconds = self.heatmap.frame_times[frame_index]
             x = self.keyboard_width + time_seconds / self.seconds_per_pixel
@@ -303,30 +379,63 @@ class PianoRollWidget(QWidget):
                 break
             if x + frame_width < left:
                 continue
-            for note_index in range(self.heatmap.note_count):
-                activation = self.heatmap.activation(frame_index, note_index)
-                if activation <= 0.005:
-                    continue
-                y = (self.heatmap.note_count - 1 - note_index) * self.note_height
-                painter.fillRect(QRectF(x, y, frame_width + 0.5, self.note_height), self._heat_color(activation))
+            if matrix is not None:
+                row = matrix[frame_index]
+                for note_index in self._active_rows(row):
+                    y = (note_count - 1 - note_index) * self.note_height
+                    painter.fillRect(QRectF(x, y, frame_width + 0.5, self.note_height), self._heat_color(float(row[note_index])))
+            else:
+                for note_index in range(note_count):
+                    activation = self.heatmap.activation(frame_index, note_index)
+                    if activation <= 0.005:
+                        continue
+                    y = (note_count - 1 - note_index) * self.note_height
+                    painter.fillRect(QRectF(x, y, frame_width + 0.5, self.note_height), self._heat_color(activation))
 
     def _draw_heatmap_columns(self, painter: QPainter, left: int, right: int, frame_step_seconds: float) -> None:
         assert self.heatmap is not None
         start_x = max(self.keyboard_width, left)
         end_x = min(self.width(), right)
+        matrix = self.heatmap.activation_matrix()
+        frame_count = self.heatmap.frame_count
+        note_count = self.heatmap.note_count
         for x in range(start_x, end_x + 1):
             start_time = max(0.0, (x - self.keyboard_width) * self.seconds_per_pixel)
             end_time = start_time + self.seconds_per_pixel
             start_frame = max(0, int(start_time / frame_step_seconds))
-            end_frame = min(self.heatmap.frame_count, max(start_frame + 1, int(math.ceil(end_time / frame_step_seconds))))
+            if start_frame >= frame_count:
+                # Pixel column past the last analysed frame (e.g. a short range on
+                # a full-song timeline). Nothing to draw; also avoids an empty
+                # numpy slice reduction.
+                break
+            end_frame = min(frame_count, max(start_frame + 1, int(math.ceil(end_time / frame_step_seconds))))
             stride = max(1, (end_frame - start_frame) // 5)
-            sampled_frames = range(start_frame, end_frame, stride)
-            for note_index in range(self.heatmap.note_count):
-                activation = max((self.heatmap.activation(frame_index, note_index) for frame_index in sampled_frames), default=0.0)
-                if activation <= 0.005:
-                    continue
-                y = (self.heatmap.note_count - 1 - note_index) * self.note_height
-                painter.fillRect(QRectF(x, y, 1.2, self.note_height), self._heat_color(activation))
+            if matrix is not None:
+                # One C-level column reduction gives all note rows for this pixel.
+                col_max = matrix[start_frame:end_frame:stride].max(axis=0)
+                for note_index in self._active_rows(col_max):
+                    y = (note_count - 1 - note_index) * self.note_height
+                    painter.fillRect(QRectF(x, y, 1.2, self.note_height), self._heat_color(float(col_max[note_index])))
+            else:
+                sampled_frames = range(start_frame, end_frame, stride)
+                for note_index in range(note_count):
+                    activation = max((self.heatmap.activation(frame_index, note_index) for frame_index in sampled_frames), default=0.0)
+                    if activation <= 0.005:
+                        continue
+                    y = (note_count - 1 - note_index) * self.note_height
+                    painter.fillRect(QRectF(x, y, 1.2, self.note_height), self._heat_color(activation))
+
+    @staticmethod
+    def _active_rows(values: Any) -> list[int]:
+        """Return note-row indices whose activation exceeds the draw threshold.
+
+        Returned as plain Python ints; numpy integer scalars must not reach the
+        Qt geometry calls (they can crash PySide6 when used as coordinates).
+        """
+
+        import numpy as np  # type: ignore[import-not-found]
+
+        return np.nonzero(values > 0.005)[0].tolist()
 
     def _frame_step_seconds(self) -> float:
         assert self.heatmap is not None
@@ -348,11 +457,19 @@ class PianoRollWidget(QWidget):
                 y = note_index * self.note_height
                 painter.drawLine(self.keyboard_width, y, self.width(), y)
         painter.setPen(QPen(QColor(255, 255, 255, 36), 1))
-        duration = self.heatmap.duration_seconds
+        duration = self._timeline_duration_seconds()
         interval = self._grid_interval_seconds()
-        second = 0
+        # Only draw grid lines within the visible clip so a full-song timeline
+        # does not paint thousands of off-screen verticals for a long file.
+        clip = painter.clipBoundingRect()
+        visible_left = clip.left() if not clip.isEmpty() else float(self.keyboard_width)
+        visible_right = clip.right() if not clip.isEmpty() else float(self.width())
+        first_index = max(0, int(((visible_left - self.keyboard_width) * self.seconds_per_pixel) / interval))
+        second = first_index * interval
         while second <= duration + interval:
             x = int(self.keyboard_width + second / self.seconds_per_pixel)
+            if x > visible_right:
+                break
             painter.drawLine(x, 0, x, self.height())
             second += interval
 
@@ -403,10 +520,9 @@ class PianoRollWidget(QWidget):
 
     def _note_rect(self, note: GuiMidiNote) -> QRectF | None:
         assert self.heatmap is not None
-        note_to_index = {pitch: index for index, pitch in enumerate(self.heatmap.midi_notes)}
-        if note.pitch not in note_to_index:
+        note_index = self._pitch_to_row.get(note.pitch)
+        if note_index is None:
             return None
-        note_index = note_to_index[note.pitch]
         x = self.keyboard_width + note.start_seconds / self.seconds_per_pixel
         y = (self.heatmap.note_count - 1 - note_index) * self.note_height
         width = max(2.0, note.duration_seconds / self.seconds_per_pixel)
