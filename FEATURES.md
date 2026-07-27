@@ -86,15 +86,17 @@ The PySide6 GUI follows the standalone GUI plan in `docs/standalone-gui-plan/` a
 - Basic Pitch/CQT/simple backend selector
 - NeuralNote-inspired transcription controls plus analysis range controls
 - background analysis worker with optional range-only analysis for long files, offset back onto the full-song timeline
-- heatmap + MIDI rectangle piano-roll widget with Ctrl+wheel horizontal time zoom, Shift+wheel vertical pitch zoom, scrolling, and pixel-aggregated drawing for large/long analyses
+- heatmap + MIDI rectangle piano-roll widget with Ctrl+wheel horizontal time zoom, Shift+wheel vertical pitch zoom, scrolling, and pixel-aggregated drawing for large/long analyses; the drawing uses a cached numpy activation matrix (with a pure-Python fallback when numpy is absent) to reduce whole columns at once
+- piano roll spans the full-song timeline so the waveform and heatmap playheads share one time-to-pixel scale even during range analysis, while the canvas width stays viewport-bounded for huge files
 - onset-grouped detected sequence table
 - original/rendered-MIDI playback controls via Qt Multimedia
 - seek both players by clicking the waveform, piano roll, or sequence rows
-- playhead overlays on waveform and piano roll
+- smooth interpolated playhead overlays on waveform and piano roll, with drift resync that tolerates coarse backend position reporting and freezes while a player is buffering/stalled
+- auto-follow scrolling that keeps the moving playhead visible when zoomed in past the viewport
 - select/highlight note rectangles in the piano roll
 - selected-note detail label with highlighted note name plus MIDI pitch/start/duration/velocity
 - inspector fields for editing selected-note start, duration, pitch, and velocity
-- piano-roll hover/selection handles and cursor feedback for moving notes or resizing either edge
+- piano-roll hover/selection handles and cursor feedback for moving notes or resizing either edge; in-progress drags repaint only the affected note rectangles and defer the full refresh/MIDI re-render to release
 - delete selected notes with Delete/Backspace or the delete button
 - sequence table and piano roll update after edits/deletion
 - rendered MIDI WAV preview updates after inspector edits, deletes, CQT retunes, and committed piano-roll drags when TiMidity++ is available
@@ -115,9 +117,9 @@ Browser retuning updates the overlay/table in memory but does not yet export a n
 
 Near-term native GUI focus:
 
-- improve playback/playhead synchronization between waveform, heatmap, original audio, and MIDI preview
+- continue playback/playhead sync edge cases (edited MIDI preview, Qt backend stall/buffering behavior on large files); smooth interpolated sync, full-song timeline mapping, and follow-scroll are implemented
 - improve heatmap zoom/navigation, especially zoom-out behavior, cursor-centered Ctrl+wheel zoom, and fit-to-selection/full-song actions
-- improve speed/responsiveness for large files with cancel/progress/LOD caching and less blocking preview rendering
+- improve speed/responsiveness for large files: the heatmap paint is vectorized and the per-drag repaint is now partial; still pending are cancel/progress/LOD caching and moving the MIDI-preview render off the UI thread (see `issues/`)
 - continue UI polish for the sampler workflow and selected-region editing
 
 Plugin formats such as VST/LV2/CLAP are not implemented yet.

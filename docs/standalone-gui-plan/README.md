@@ -53,7 +53,8 @@ Implemented in the GUI:
 - background waveform preview loading with click-to-seek playhead, drag-to-select analysis ranges, and draggable selection handles, including non-WAV fallback previews through standalone/librosa dependencies
 - background low-resolution full-song pitch overview for finding sample/chop regions before detailed analysis
 - background analysis worker using existing Python backends, with optional time-range extraction for long files that is offset back onto the full-song timeline
-- heatmap/piano-roll widget with MIDI note overlay, keyboard axis, Ctrl+wheel horizontal time zoom, Shift+wheel vertical pitch zoom, scrolling, and pixel-aggregated drawing for large/long analyses
+- heatmap/piano-roll widget with MIDI note overlay, keyboard axis, Ctrl+wheel horizontal time zoom, Shift+wheel vertical pitch zoom, scrolling, and pixel-aggregated drawing (vectorized with a cached numpy activation matrix, pure-Python fallback) for large/long analyses
+- full-song piano-roll timeline so waveform and heatmap playheads share one time-to-pixel scale during range analysis, with the canvas width kept viewport-bounded for huge files, and follow-scroll to keep the playhead visible when zoomed in
 - NeuralNote-inspired left controls for backend, note sensitivity, split sensitivity, CQT threshold, minimum duration, and analysis range
 - original audio and rendered MIDI WAV playback through Qt Multimedia
 - Play both / Original / MIDI / Pause / Stop transport controls
@@ -69,9 +70,9 @@ Implemented in the GUI:
 
 Still pending / next priorities:
 
-- continued playback/playhead synchronization polish between waveform, heatmap, original audio, and rendered MIDI preview; smooth interpolated shared playhead sync plus range-aware MIDI preview timeline mapping are implemented
+- playback/playhead synchronization: smooth interpolated shared sync, full-song timeline mapping, drift resync that tolerates coarse backend position reporting, a stall/buffering freeze, and follow-scroll are implemented; remaining work is edge cases with edited MIDI previews and Qt backend behavior on large files
 - zoom/navigation polish: note edits/clicks no longer compound zoom; mouse-wheel time/pitch zoom is implemented without left-panel zoom sliders; still pending cursor-centered Ctrl+wheel zoom, fit-to-selection/full-song actions, and stable scroll position when zooming out
-- speed/responsiveness polish: cancel long jobs, better progress detail, optional overview/heatmap level-of-detail caching, and background/debounced MIDI preview rendering if TiMidity++ blocks
+- speed/responsiveness polish: heatmap paint is vectorized and per-drag repaint is now partial (see `issues/issue001`–`issue003`); still pending are cancel long jobs, better progress detail, optional overview/heatmap level-of-detail caching, and moving MIDI preview rendering off the UI thread (`issues/issue004`)
 - UI polish for the sampler workflow: clearer selected-region affordances, denser but readable controls, stronger hierarchy between overview waveform and detail piano roll
 - optional ghost-preview polish during note drag
 - undo/redo and keyboard nudging for edits
