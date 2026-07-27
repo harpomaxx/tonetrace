@@ -28,6 +28,7 @@ class PianoRollWidget(QWidget):
         self.full_duration_seconds = 0.0
         self._pitch_to_row: dict[int, int] = {}
         self.show_notes = True
+        self.show_heatmap = True
         self.selected_note_index: int | None = None
         self.hover_note_index: int | None = None
         self.hover_mode: str | None = None
@@ -152,6 +153,10 @@ class PianoRollWidget(QWidget):
 
     def set_show_notes(self, enabled: bool) -> None:
         self.show_notes = enabled
+        self.update()
+
+    def set_show_heatmap(self, enabled: bool) -> None:
+        self.show_heatmap = enabled
         self.update()
 
     def preview_note_edit(self, index: int, note: GuiMidiNote) -> None:
@@ -327,7 +332,8 @@ class PianoRollWidget(QWidget):
             return
 
         self._draw_keyboard(painter)
-        self._draw_heatmap(painter)
+        if self.show_heatmap:
+            self._draw_heatmap(painter)
         self._draw_grid(painter)
         if self.show_notes:
             self._draw_notes(painter)

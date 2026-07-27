@@ -129,6 +129,15 @@ QLabel#knobValueLabel {
     color: #ffd66b;
     font-weight: 800;
 }
+QLabel#statsStrip {
+    color: #ffd66b;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    background: #12161f;
+    border: 1px solid #273040;
+    border-radius: 7px;
+    padding: 6px 12px;
+}
 QGroupBox[panel="muted"] {
     border-color: #273040;
     background: #0d1118;

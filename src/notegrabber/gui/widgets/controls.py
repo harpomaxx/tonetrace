@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -54,6 +53,7 @@ class AnalysisControls(QWidget):
     open_requested = Signal()
     retune_requested = Signal()
     overlay_toggled = Signal(bool)
+    heatmap_toggled = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -76,6 +76,9 @@ class AnalysisControls(QWidget):
         self.range_duration.setToolTip("Range length in seconds. Keep this small for faster Basic Pitch analysis.")
         self.show_overlay = QCheckBox("Show MIDI overlay")
         self.show_overlay.setChecked(True)
+        self.notes_only = QCheckBox("Notes only (hide heatmap)")
+        self.notes_only.setChecked(False)
+        self.notes_only.setToolTip("Hide the pitch-salience heatmap and show only the extracted MIDI notes, to focus on the notes.")
 
         self.open_button = self._action_button("Open", role="secondary", icon_name="folder")
         self.analyze_button = self._action_button("Analyze", role="primary", icon_name="analyze")
@@ -96,9 +99,9 @@ class AnalysisControls(QWidget):
         layout.addWidget(brand)
         layout.addWidget(self._build_transcription_group())
         layout.addWidget(self._build_range_group())
-        # Keep the primary workflow buttons above lower-priority reserved controls
-        # so Open/Analyze/Delete/Export remain visible on shorter screens.
-        layout.addWidget(self._build_action_group())
+        # The primary workflow buttons (Open/Analyze/Delete/Export) live in a
+        # horizontal action bar above the waveform (see build_action_bar), not in
+        # this left column, so the transcription info below stays visible.
         layout.addWidget(self._build_stub_group("Pitch bend", "No Pitch Bend (reserved)"))
         layout.addWidget(self._build_stub_group("Scale quantize", "Disabled for first milestone"))
         layout.addWidget(self._build_stub_group("Time quantize", "Disabled for first milestone"))
@@ -109,6 +112,9 @@ class AnalysisControls(QWidget):
         self.export_button.clicked.connect(self.export_requested.emit)
         self.delete_button.clicked.connect(self.delete_requested.emit)
         self.show_overlay.toggled.connect(self.overlay_toggled.emit)
+        # Checkbox reads "Notes only", so emit "show heatmap" as its inverse to
+        # mirror the set_show_notes wiring on the piano roll.
+        self.notes_only.toggled.connect(lambda checked: self.heatmap_toggled.emit(not checked))
         # Retune only when a knob change is committed (drag release / wheel /
         # key), not on every intermediate value, so dragging a knob does not
         # re-extract notes and repaint dozens of times per second. Value labels
@@ -164,18 +170,25 @@ class AnalysisControls(QWidget):
     def set_can_delete(self, enabled: bool) -> None:
         self.delete_button.setEnabled(enabled)
 
-    def _build_action_group(self) -> QGroupBox:
-        group = QGroupBox("Actions")
-        group.setObjectName("actionsGroup")
-        group.setProperty("panel", "muted")
-        grid = QGridLayout(group)
-        grid.setContentsMargins(10, 10, 10, 10)
-        grid.setSpacing(8)
-        grid.addWidget(self.open_button, 0, 0)
-        grid.addWidget(self.analyze_button, 0, 1)
-        grid.addWidget(self.delete_button, 1, 0)
-        grid.addWidget(self.export_button, 1, 1)
-        return group
+    def build_action_bar(self) -> QWidget:
+        """Return a horizontal bar with the primary workflow buttons.
+
+        Reuses the same button objects created in ``__init__`` so all existing
+        signal wiring and enable/disable logic keeps working; only their layout
+        home changes. Placed above the waveform by the main window.
+        """
+
+        bar = QWidget()
+        bar.setObjectName("actionBar")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        row.addWidget(self.open_button)
+        row.addWidget(self.analyze_button)
+        row.addWidget(self.delete_button)
+        row.addWidget(self.export_button)
+        row.addStretch(1)
+        return bar
 
     def _build_range_group(self) -> QGroupBox:
         group = QGroupBox("Analysis range")
@@ -210,6 +223,7 @@ class AnalysisControls(QWidget):
             self._knob_cell(self.min_duration, self._format_millis),
         )
         form.addRow(self.show_overlay)
+        form.addRow(self.notes_only)
         return group
 
     @staticmethod

@@ -28,6 +28,7 @@ from notegrabber.analyzer import BackendName
 from notegrabber.midi import write_midi
 
 from .analysis_worker import AnalysisRequest, AnalysisResult, AnalysisWorker
+from .transcription_stats import compute_stats
 from .midi_preview_worker import MidiPreviewRequest, MidiPreviewResult, MidiPreviewWorker, render_midi_preview
 from .overview_worker import OverviewResult, OverviewWorker
 from .state import GuiMidiNote, ProjectState, delete_gui_note, gui_notes_to_midi, retune_notes_from_heatmap, update_gui_note
@@ -207,8 +208,13 @@ class MainWindow(QMainWindow):
         top = QWidget()
         top_layout = QVBoxLayout(top)
         top_layout.addWidget(self.transport)
+        top_layout.addWidget(self.controls.build_action_bar())
         top_layout.addWidget(self.file_label)
         top_layout.addWidget(self.waveform)
+        self.stats_label = QLabel("Notes 0  ·  0:00  ·  — BPM  ·  —")
+        self.stats_label.setObjectName("statsStrip")
+        self.stats_label.setToolTip("Transcription summary: note count · duration · estimated tempo · detected key. Updates after Analyze and edits.")
+        top_layout.addWidget(self.stats_label)
 
         self.piano_scroll = QScrollArea()
         self.piano_scroll.setWidgetResizable(True)
@@ -251,6 +257,7 @@ class MainWindow(QMainWindow):
         self.controls.delete_requested.connect(self._delete_selected_note)
         self.controls.retune_requested.connect(self._retune_from_controls)
         self.controls.overlay_toggled.connect(self.piano_roll.set_show_notes)
+        self.controls.heatmap_toggled.connect(self.piano_roll.set_show_heatmap)
         self.transport.play_both_requested.connect(self._play_both)
         self.transport.play_original_requested.connect(self._play_original)
         self.transport.play_midi_requested.connect(self._play_midi)
@@ -485,6 +492,13 @@ class MainWindow(QMainWindow):
         self.piano_roll.set_data(self.state.heatmap, notes, full_duration_seconds=self.waveform.duration_seconds())
         self.sequence.set_notes(notes)
         self.controls.set_can_export(self.state.heatmap is not None)
+        self._update_stats(notes)
+
+    def _update_stats(self, notes: list[GuiMidiNote]) -> None:
+        """Compute and display the transcription stats strip."""
+
+        stats = compute_stats(notes, duration_seconds=self.waveform.duration_seconds())
+        self.stats_label.setText(stats.strip_text())
 
     def _select_note(self, index: int | None, _seek_seconds: float | None = None) -> None:
         notes = self.state.current_notes
