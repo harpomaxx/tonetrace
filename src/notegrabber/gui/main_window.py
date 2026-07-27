@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
 import tempfile
-import wave
 from pathlib import Path
 
 from PySide6.QtCore import QElapsedTimer, QThread, QTimer, Qt, QUrl
@@ -26,9 +26,9 @@ from PySide6.QtWidgets import (
 
 from notegrabber.analyzer import BackendName
 from notegrabber.midi import write_midi
-from notegrabber.visualizer import render_midi_to_wav
 
 from .analysis_worker import AnalysisRequest, AnalysisResult, AnalysisWorker
+from .midi_preview_worker import MidiPreviewRequest, MidiPreviewResult, MidiPreviewWorker, render_midi_preview
 from .overview_worker import OverviewResult, OverviewWorker
 from .state import GuiMidiNote, ProjectState, delete_gui_note, gui_notes_to_midi, retune_notes_from_heatmap, update_gui_note
 from .theme import APP_STYLESHEET, polish_button
@@ -78,6 +78,16 @@ class MainWindow(QMainWindow):
         self.playback_sync_ticks = 0
         self.playback_stalled = False
         self._suppress_reactive_playhead = False
+
+        # Debounced, superseding, off-thread MIDI preview rendering so editing
+        # notes does not freeze the UI on every edit.
+        self.preview_runs: list[tuple[QThread, MidiPreviewWorker]] = []
+        self._preview_dir: Path | None = None
+        self._preview_request_id = 0
+        self._pending_preview_notes: list[GuiMidiNote] | None = None
+        self.preview_debounce_timer = QTimer(self)
+        self.preview_debounce_timer.setSingleShot(True)
+        self.preview_debounce_timer.setInterval(250)
 
         self.setWindowTitle("ToneTrace")
         self.resize(1280, 820)
@@ -253,6 +263,7 @@ class MainWindow(QMainWindow):
         self.original_player.mediaStatusChanged.connect(self._media_status_changed)
         self.midi_player.mediaStatusChanged.connect(self._media_status_changed)
         self.playback_timer.timeout.connect(self._sync_playback_tick)
+        self.preview_debounce_timer.timeout.connect(self._start_preview_render)
         self.waveform.seek_requested.connect(self._seek_seconds)
         self.waveform.range_selected.connect(self._set_analysis_range_from_waveform)
         self.piano_roll.seek_requested.connect(self._seek_seconds)
@@ -440,6 +451,16 @@ class MainWindow(QMainWindow):
             return
         super().keyPressEvent(event)
 
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self.preview_debounce_timer.stop()
+        for thread, _worker in list(self.preview_runs):
+            thread.quit()
+            thread.wait(2000)
+        if self._preview_dir is not None:
+            shutil.rmtree(self._preview_dir, ignore_errors=True)
+            self._preview_dir = None
+        super().closeEvent(event)
+
     def _retune_from_controls(self) -> None:
         if self.state.heatmap is None:
             return
@@ -560,37 +581,94 @@ class MainWindow(QMainWindow):
         self._set_status(f"{status_prefix}. Export writes {len(self.state.tuned_notes)} edited notes.{preview_status}")
 
     def _refresh_midi_preview(self, notes: list[GuiMidiNote]) -> str:
+        """Schedule a debounced, off-thread MIDI preview re-render.
+
+        Returns immediately so editing never blocks on TiMidity.  The latest
+        edit supersedes earlier pending/in-flight renders; the completion handler
+        swaps the player source and restores playback position.
+        """
+
         if not self.render_midi:
             return " MIDI preview rendering disabled."
-        preview_dir = Path(tempfile.mkdtemp(prefix="notegrabber-gui-edit-"))
-        midi_path = preview_dir / "edited.mid"
-        wav_path = preview_dir / "edited.wav"
-        try:
-            preview_notes = self._notes_for_midi_preview(notes)
-            write_midi(midi_path, gui_notes_to_midi(preview_notes))
-            if preview_notes:
-                rendered_path, render_error = render_midi_to_wav(midi_path, wav_path)
-            else:
-                self._write_silent_wav(wav_path)
-                rendered_path, render_error = wav_path, None
-        except Exception as exc:
-            self.state.rendered_midi_wav = None
-            self.midi_player.setSource(QUrl())
-            self.transport.set_playback_available(original=self.state.audio_path is not None, midi=False)
-            return f" MIDI preview unavailable: {exc}"
-        if rendered_path is None:
-            self.state.rendered_midi_wav = None
-            self.midi_player.setSource(QUrl())
-            self.transport.set_playback_available(original=self.state.audio_path is not None, midi=False)
-            return f" MIDI preview unavailable: {render_error or 'unknown render error'}"
+        self._pending_preview_notes = list(notes)
+        # Bump the id now so any in-flight render already dispatched is treated as
+        # stale when it finishes.
+        self._preview_request_id += 1
+        self.preview_debounce_timer.start()
+        return " MIDI preview updating…"
+
+    def _preview_paths(self) -> tuple[Path, Path]:
+        if self._preview_dir is None:
+            self._preview_dir = Path(tempfile.mkdtemp(prefix="notegrabber-gui-edit-"))
+        return self._preview_dir / "edited.mid", self._preview_dir / "edited.wav"
+
+    def _build_preview_request(self, notes: list[GuiMidiNote]) -> MidiPreviewRequest:
+        midi_path, wav_path = self._preview_paths()
+        return MidiPreviewRequest(
+            render_id=self._preview_request_id,
+            notes=self._notes_for_midi_preview(notes),
+            midi_path=midi_path,
+            wav_path=wav_path,
+            silent_duration_seconds=max(1.0, self.waveform.duration_seconds()),
+        )
+
+    def _start_preview_render(self) -> None:
+        if self._pending_preview_notes is None:
+            return
+        request = self._build_preview_request(self._pending_preview_notes)
+        self._pending_preview_notes = None
+        thread = QThread(self)
+        worker = MidiPreviewWorker(request)
+        self.preview_runs.append((thread, worker))
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._preview_render_finished)
+        worker.failed.connect(self._preview_render_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(lambda thread=thread, worker=worker: self._preview_thread_finished(thread, worker))
+        thread.start()
+
+    def _preview_thread_finished(self, thread: QThread, worker: MidiPreviewWorker) -> None:
+        self.preview_runs = [(run_thread, run_worker) for run_thread, run_worker in self.preview_runs if run_thread is not thread]
+        worker.deleteLater()
+        thread.deleteLater()
+
+    def _preview_render_finished(self, result: MidiPreviewResult) -> None:
+        if result.render_id != self._preview_request_id:
+            return  # superseded by a newer edit; ignore this stale render
         previous_display_seconds = self._display_seconds_from_midi_position(self.midi_player.position())
-        self.state.rendered_midi_wav = rendered_path
+        self.state.rendered_midi_wav = result.rendered_wav
         self.state.midi_preview_offset_seconds = self.state.analysis_start_seconds if self.state.analysis_duration_seconds is not None else 0.0
-        self.midi_player.setSource(QUrl.fromLocalFile(str(rendered_path)))
+        self.midi_player.setSource(QUrl.fromLocalFile(str(result.rendered_wav)))
         if previous_display_seconds > 0:
             self.midi_player.setPosition(self._midi_position_from_display_seconds(previous_display_seconds))
         self.transport.set_playback_available(original=self.state.audio_path is not None, midi=True)
-        return " MIDI preview re-rendered."
+        self._set_status("MIDI preview re-rendered.")
+
+    def _preview_render_failed(self, request: MidiPreviewRequest, message: str) -> None:
+        if request.render_id != self._preview_request_id:
+            return
+        self.state.rendered_midi_wav = None
+        self.midi_player.setSource(QUrl())
+        self.transport.set_playback_available(original=self.state.audio_path is not None, midi=False)
+        self._set_status(f"MIDI preview unavailable: {message}")
+
+    def _flush_preview_render(self) -> None:
+        """Render any pending/in-flight preview synchronously (used by tests)."""
+
+        if self.preview_debounce_timer.isActive():
+            self.preview_debounce_timer.stop()
+        if self._pending_preview_notes is None:
+            return
+        request = self._build_preview_request(self._pending_preview_notes)
+        self._pending_preview_notes = None
+        try:
+            rendered_wav = render_midi_preview(request)
+        except Exception as exc:
+            self._preview_render_failed(request, str(exc))
+            return
+        self._preview_render_finished(MidiPreviewResult(render_id=request.render_id, rendered_wav=rendered_wav))
 
     def _notes_for_midi_preview(self, notes: list[GuiMidiNote]) -> list[GuiMidiNote]:
         """Return notes in the local MIDI-preview timeline.
@@ -621,19 +699,6 @@ class MainWindow(QMainWindow):
                 )
             )
         return preview_notes
-
-    def _write_silent_wav(self, path: Path) -> None:
-        """Write a silent WAV preview for an intentionally empty edited note list."""
-
-        sample_rate = 44_100
-        duration = max(1.0, self.waveform.duration_seconds())
-        frame_count = max(1, round(duration * sample_rate))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with wave.open(str(path), "wb") as output:
-            output.setnchannels(1)
-            output.setsampwidth(2)
-            output.setframerate(sample_rate)
-            output.writeframes(b"\x00\x00" * frame_count)
 
     def _set_note_inspector_enabled(self, enabled: bool) -> None:
         for widget in (

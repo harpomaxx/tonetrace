@@ -10,7 +10,7 @@ refactor, so sequencing them together amortizes the work.
 | [001](issue001.md) | Heatmap paint is O(pixels × notes) of interpreted Python per repaint | High | Medium | ✅ Done |
 | [002](issue002.md) | `_note_rect` rebuilds a pitch→row dict on every call | High | Low | ✅ Done |
 | [003](issue003.md) | Every intermediate drag move does a full `set_data` + resize + repaint | High | Low–Medium | ✅ Done |
-| [004](issue004.md) | MIDI preview render runs TiMidity synchronously on the UI thread | High | Medium–High | Open |
+| [004](issue004.md) | MIDI preview render runs TiMidity synchronously on the UI thread | High | Medium–High | ✅ Done |
 | [005](issue005.md) | Waveform paint slices Python lists per pixel column | Medium | Low–Medium | Open |
 | [006](issue006.md) | Overview build max-pools in pure-Python nested loops | Low | Low | Open |
 
