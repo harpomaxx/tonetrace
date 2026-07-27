@@ -27,6 +27,13 @@ class WaveformWidget(QWidget):
         self.samples: list[float] = []
         self.sample_rate = 0
         self.audio_duration_seconds = 0.0
+        # Cached numpy view of samples plus a per-pixel (min, max) envelope so the
+        # paint loop is a bare drawLine per column instead of a Python slice +
+        # min()/max() each. Rebuilt lazily when the samples or column step change.
+        self._samples_array: object = None
+        self._envelope_step = 0
+        self._envelope_low: object = None
+        self._envelope_high: object = None
         # Left gutter matching the piano roll's keyboard width so the waveform
         # timeline and the heatmap timeline share the same seconds->x mapping and
         # their playheads line up on screen.
@@ -67,7 +74,14 @@ class WaveformWidget(QWidget):
         self.sample_rate = sample_rate
         self.audio_duration_seconds = duration_seconds
         self.empty_message = "Open an audio file to show waveform"
+        self._invalidate_envelope()
         self.update()
+
+    def _invalidate_envelope(self) -> None:
+        self._samples_array = None
+        self._envelope_step = 0
+        self._envelope_low = None
+        self._envelope_high = None
 
     def set_pitch_overview(self, overview: PitchOverview | None) -> None:
         """Set or clear the low-resolution pitch overview strip."""
@@ -297,19 +311,15 @@ class WaveformWidget(QWidget):
         clip_left = max(gutter, int(clip.left()) - 1) if not clip.isEmpty() else gutter
         clip_right = min(width, int(clip.right()) + 2) if not clip.isEmpty() else width
         step = max(1, len(self.samples) // max(1, time_width))
+        low_env, high_env = self._pixel_envelope(step)
+        amplitude = waveform_height * 0.45
         painter.setPen(QPen(QColor(255, 170, 72), 1))
         for x in range(clip_left, clip_right):
-            start = (x - gutter) * step
-            if start < 0:
+            column = x - gutter
+            if column < 0 or column >= len(low_env):
                 continue
-            end = min(len(self.samples), start + step)
-            if start >= end:
-                break
-            chunk = self.samples[start:end]
-            low = min(chunk)
-            high = max(chunk)
-            y1 = int(mid_y - high * (waveform_height * 0.45))
-            y2 = int(mid_y - low * (waveform_height * 0.45))
+            y1 = int(mid_y - high_env[column] * amplitude)
+            y2 = int(mid_y - low_env[column] * amplitude)
             painter.drawLine(x, y1, x, y2)
 
         self._draw_pitch_overview(painter, width, height, overview_height)
@@ -320,6 +330,52 @@ class WaveformWidget(QWidget):
             playhead_x = int(self._x_for_seconds(self.playhead_seconds))
             painter.setPen(QPen(QColor(255, 230, 120), 2))
             painter.drawLine(playhead_x, 0, playhead_x, height)
+
+    def _pixel_envelope(self, step: int) -> tuple[object, object]:
+        """Return per-column ``(low, high)`` sample envelopes for the given step.
+
+        Column ``i`` covers samples ``[i * step : (i + 1) * step]``, matching the
+        old per-pixel slice. Cached on ``step`` and rebuilt only when the step or
+        samples change, so selection-drag repaints reuse the same arrays. Uses
+        numpy when available and falls back to a pure-Python build otherwise.
+        """
+
+        step = max(1, step)
+        if self._envelope_step == step and self._envelope_low is not None:
+            return self._envelope_low, self._envelope_high
+
+        sample_count = len(self.samples)
+        column_count = (sample_count + step - 1) // step  # ceil, includes ragged tail
+        try:
+            import numpy as np  # type: ignore[import-not-found]
+        except ModuleNotFoundError:
+            low = [0.0] * column_count
+            high = [0.0] * column_count
+            for column in range(column_count):
+                chunk = self.samples[column * step : column * step + step]
+                if chunk:
+                    low[column] = min(chunk)
+                    high[column] = max(chunk)
+        else:
+            if self._samples_array is None:
+                self._samples_array = np.asarray(self.samples, dtype=np.float32)
+            data = self._samples_array
+            full_columns = sample_count // step
+            low = np.zeros(column_count, dtype=np.float32)
+            high = np.zeros(column_count, dtype=np.float32)
+            if full_columns:
+                block = data[: full_columns * step].reshape(full_columns, step)
+                low[:full_columns] = block.min(axis=1)
+                high[:full_columns] = block.max(axis=1)
+            if full_columns < column_count:  # ragged final chunk shorter than step
+                tail = data[full_columns * step :]
+                low[full_columns] = tail.min()
+                high[full_columns] = tail.max()
+
+        self._envelope_step = step
+        self._envelope_low = low
+        self._envelope_high = high
+        return low, high
 
     def _overview_height(self, total_height: int) -> int:
         if self.pitch_overview is None:
@@ -339,6 +395,8 @@ class WaveformWidget(QWidget):
         gutter = self.left_gutter
         time_width = self._time_width()
         band_height = max(1.0, overview_height / overview.band_count)
+        rows = overview.activations
+        band_count = overview.band_count
         for frame_index, time_seconds in enumerate(overview.frame_times):
             x = int(gutter + max(0.0, min(1.0, time_seconds / duration)) * time_width)
             next_time = overview.frame_times[frame_index + 1] if frame_index + 1 < overview.frame_count else duration
@@ -346,11 +404,15 @@ class WaveformWidget(QWidget):
             column_width = max(1, next_x - x)
             if x + column_width < clip_left or x > clip_right:
                 continue
-            for band_index in range(overview.band_count):
-                activation = overview.activation(frame_index, band_index)
+            # Index the row once per frame rather than a bounds-checked accessor
+            # call per band; clamp inline to match PitchOverview.activation().
+            row = rows[frame_index] if frame_index < len(rows) else ()
+            for band_index in range(band_count):
+                activation = float(row[band_index]) if band_index < len(row) else 0.0
                 if activation <= 0.04:
                     continue
-                y = top + int((overview.band_count - 1 - band_index) * band_height)
+                activation = max(0.0, min(1.0, activation))
+                y = top + int((band_count - 1 - band_index) * band_height)
                 painter.fillRect(QRectF(x, y, column_width, max(1.0, band_height)), self._overview_color(activation))
         painter.setPen(QPen(QColor(255, 176, 64, 110), 1))
         painter.drawLine(0, top, width, top)
