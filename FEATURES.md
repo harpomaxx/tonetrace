@@ -13,7 +13,7 @@ Supported backends:
 
 - `simple` — deterministic stdlib DSP baseline for synthetic tests.
 - `cqt` — librosa Constant-Q Transform heatmap plus heuristic MIDI extraction.
-- `basic-pitch` — Spotify Basic Pitch/ONNX ML transcription; current best backend for real samples.
+- `basic-pitch` — Spotify Basic Pitch/ONNX ML transcription; current best backend for real samples. Defaults and note-creation controls (`infer_onsets`, frequency bounds) match NeuralNote's Basic Pitch usage for cleaner results.
 
 Tuning flags:
 
@@ -100,6 +100,9 @@ The PySide6 GUI follows the standalone GUI plan in `docs/standalone-gui-plan/` a
 - delete selected notes with Delete/Backspace or the delete button
 - sequence table and piano roll update after edits/deletion
 - rendered MIDI WAV preview updates after inspector edits, deletes, CQT retunes, and committed piano-roll drags when TiMidity++ is available
+- "Notes only (hide heatmap)" toggle to view just the extracted MIDI notes without the pitch-salience heatmap
+- Open/Analyze/Delete/Export in a horizontal action bar above the waveform (not the left panel), keeping the transcription controls visible
+- always-visible stats strip under the waveform: note count, duration, estimated tempo (BPM), and detected musical key/scale, refreshed on every note edit
 - polished first-pass dark pro-DAW Qt theme with warm red/orange/yellow accents, rounded card panels, compact action pad, SVG button icons, and explanatory slider tooltips
 - export current edited/tuned notes to MIDI
 
@@ -119,7 +122,7 @@ Near-term native GUI focus:
 
 - continue playback/playhead sync edge cases (edited MIDI preview, Qt backend stall/buffering behavior on large files); smooth interpolated sync, full-song timeline mapping, and follow-scroll are implemented
 - improve heatmap zoom/navigation, especially zoom-out behavior, cursor-centered Ctrl+wheel zoom, and fit-to-selection/full-song actions
-- improve speed/responsiveness for large files: the heatmap paint is vectorized, the per-drag repaint is now partial, and the MIDI-preview render runs off the UI thread; still pending are cancel/progress/LOD caching (see the [GitHub issues](https://github.com/harpomaxx/tonetrace/issues))
+- improve speed/responsiveness for large files: the heatmap, waveform, and overview paints are now numpy-vectorized, the per-drag repaint is partial, and the MIDI-preview render runs off the UI thread; still pending are cancel/progress/LOD caching (see the [GitHub issues](https://github.com/harpomaxx/tonetrace/issues))
 - continue UI polish for the sampler workflow and selected-region editing
 
 Plugin formats such as VST/LV2/CLAP are not implemented yet.

@@ -87,7 +87,10 @@ section (handy for long files), pick a backend, and click **Analyze**. Then:
 
 - Compare **Both** / **Audio** / **MIDI** playback with a synchronized playhead.
 - Inspect the heatmap and MIDI note overlay; zoom (Ctrl+wheel time, Shift+wheel
-  pitch) and scroll.
+  pitch) and scroll. Toggle **Notes only** to hide the heatmap and focus on the
+  extracted notes.
+- Read the stats strip under the waveform (note count, duration, estimated
+  tempo, and detected key), which updates as you edit.
 - Select, drag, resize, retune, and delete notes; edits re-render the MIDI
   preview.
 - **Export** the edited notes as a Standard MIDI File.
@@ -131,7 +134,8 @@ performance backlog.
 
 Implemented: CLI transcription, browser viewer, local server, and a native
 PySide6 GUI with background analysis, waveform/heatmap views, playback
-comparison, note editing, and MIDI export.
+comparison, note editing, MIDI export, and a transcription stats strip
+(note count, duration, estimated tempo, and detected key/scale).
 
 Not yet: VST/LV2/CLAP plugin formats, project save/load, and undo/redo. The
 near-term focus is UI polish, speed/responsiveness, and playback/zoom
