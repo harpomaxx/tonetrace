@@ -399,9 +399,15 @@ class PianoRollWidget(QWidget):
         matrix = self.heatmap.activation_matrix()
         frame_count = self.heatmap.frame_count
         note_count = self.heatmap.note_count
+        first_frame_seconds = self._first_frame_seconds()
         for x in range(start_x, end_x + 1):
-            start_time = max(0.0, (x - self.keyboard_width) * self.seconds_per_pixel)
+            # Time relative to the first frame: range analyses offset frames onto
+            # the full-song timeline, so frame 0 is not at t=0.
+            start_time = (x - self.keyboard_width) * self.seconds_per_pixel - first_frame_seconds
             end_time = start_time + self.seconds_per_pixel
+            if end_time <= 0.0:
+                # Pixel column before the analysed range starts; nothing to draw.
+                continue
             start_frame = max(0, int(start_time / frame_step_seconds))
             if start_frame >= frame_count:
                 # Pixel column past the last analysed frame (e.g. a short range on
@@ -443,10 +449,22 @@ class PianoRollWidget(QWidget):
             return max(self.seconds_per_pixel, 0.001)
         return max(0.001, self.heatmap.frame_times[1] - self.heatmap.frame_times[0])
 
+    def _first_frame_seconds(self) -> float:
+        """Time of the first heatmap frame.
+
+        For a range analysis the frame times are offset onto the full-song
+        timeline (e.g. starting at 40s), so frame index 0 is not at t=0.  Index
+        math must subtract this or the heatmap draws shifted left relative to the
+        MIDI notes and playhead.
+        """
+
+        assert self.heatmap is not None
+        return self.heatmap.frame_times[0] if self.heatmap.frame_times else 0.0
+
     def _frame_index_at_x(self, x: float) -> int:
         assert self.heatmap is not None
         frame_step_seconds = self._frame_step_seconds()
-        seconds = max(0.0, (x - self.keyboard_width) * self.seconds_per_pixel)
+        seconds = (x - self.keyboard_width) * self.seconds_per_pixel - self._first_frame_seconds()
         return max(0, min(self.heatmap.frame_count, int(seconds / frame_step_seconds)))
 
     def _draw_grid(self, painter: QPainter) -> None:

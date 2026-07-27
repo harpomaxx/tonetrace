@@ -43,6 +43,13 @@ from .widgets.waveform import WaveformWidget
 class MainWindow(QMainWindow):
     """NeuralNote-inspired standalone app shell."""
 
+    # Solo playback volume for a single source.
+    SOLO_VOLUME = 0.85
+    # Play-both mix: duck the (usually busier) original and keep the rendered
+    # MIDI at full level so the transcription is clearly audible for A/B checks.
+    BOTH_ORIGINAL_VOLUME = 0.55
+    BOTH_MIDI_VOLUME = 1.0
+
     PLAYBACK_RESYNC_TICKS = 12
     # QMediaPlayer.position() lags the audible position on buffered backends
     # (FFmpeg/GStreamer report the start of the current decode buffer), so it is
@@ -78,6 +85,9 @@ class MainWindow(QMainWindow):
         self.controls.backend_combo.setCurrentText(initial_backend)
         self.waveform = WaveformWidget()
         self.piano_roll = PianoRollWidget()
+        # Keep the waveform's left gutter equal to the piano roll's keyboard so
+        # both timelines use the same seconds->x mapping and their playheads line up.
+        self.waveform.left_gutter = self.piano_roll.keyboard_width
         self.sequence = SequenceWidget()
         self.transport = TransportWidget()
         self.file_label = QLabel("No audio loaded")
@@ -96,8 +106,8 @@ class MainWindow(QMainWindow):
         self.midi_player = QMediaPlayer(self)
         self.original_player.setAudioOutput(self.original_audio)
         self.midi_player.setAudioOutput(self.midi_audio)
-        self.original_audio.setVolume(0.85)
-        self.midi_audio.setVolume(0.85)
+        self.original_audio.setVolume(self.SOLO_VOLUME)
+        self.midi_audio.setVolume(self.SOLO_VOLUME)
         self.file_label.setObjectName("fileLabel")
         self.selected_note_label.setObjectName("selectedNoteLabel")
         self.selected_note_label.setTextFormat(Qt.TextFormat.RichText)
@@ -666,10 +676,26 @@ class MainWindow(QMainWindow):
             self._start_playback_clock(display_seconds)
         self._set_playhead(display_seconds)
 
+    def _apply_playback_mix(self, mode: str) -> None:
+        """Balance the two players for the given playback mode.
+
+        In ``both`` mode the busier original tends to mask the rendered MIDI, so
+        duck the original and keep the MIDI at full level; solo modes use the
+        normal level.
+        """
+
+        if mode == "both":
+            self.original_audio.setVolume(self.BOTH_ORIGINAL_VOLUME)
+            self.midi_audio.setVolume(self.BOTH_MIDI_VOLUME)
+        else:
+            self.original_audio.setVolume(self.SOLO_VOLUME)
+            self.midi_audio.setVolume(self.SOLO_VOLUME)
+
     def _play_both(self) -> None:
         if self.state.audio_path is None or self.state.rendered_midi_wav is None:
             return
         display_seconds = self._play_start_display_seconds()
+        self._apply_playback_mix("both")
         self.original_player.setPosition(self._original_position_from_display_seconds(display_seconds))
         self.midi_player.setPosition(self._midi_position_from_display_seconds(display_seconds))
         self.playback_mode = "both"
@@ -684,6 +710,7 @@ class MainWindow(QMainWindow):
         if self.state.audio_path is None:
             return
         display_seconds = self._play_start_display_seconds()
+        self._apply_playback_mix("original")
         self.midi_player.pause()
         self.original_player.setPosition(self._original_position_from_display_seconds(display_seconds))
         self.playback_mode = "original"
@@ -697,6 +724,7 @@ class MainWindow(QMainWindow):
         if self.state.rendered_midi_wav is None:
             return
         display_seconds = self._play_start_display_seconds()
+        self._apply_playback_mix("midi")
         self.original_player.pause()
         self.original_player.setPosition(self._original_position_from_display_seconds(display_seconds))
         self.midi_player.setPosition(self._midi_position_from_display_seconds(display_seconds))
@@ -767,10 +795,16 @@ class MainWindow(QMainWindow):
         return max(0, round(local_seconds * 1000))
 
     def _active_analysis_range(self) -> tuple[float, float] | None:
-        if self.state.analysis_duration_seconds is None:
+        if self.state.analysis_duration_seconds is not None:
+            start = max(0.0, self.state.analysis_start_seconds)
+            return start, start + max(0.0, self.state.analysis_duration_seconds)
+        # No analysis yet: fall back to the pending range selected in the controls
+        # so playback still stops at the chosen range end before Analyze is run.
+        start_seconds, duration_seconds = self.controls.analysis_range()
+        if duration_seconds is None or duration_seconds <= 0:
             return None
-        start = max(0.0, self.state.analysis_start_seconds)
-        return start, start + max(0.0, self.state.analysis_duration_seconds)
+        start = max(0.0, float(start_seconds))
+        return start, start + float(duration_seconds)
 
     def _clamp_to_analysis_range(self, seconds: float) -> float:
         bounds = self._active_analysis_range()

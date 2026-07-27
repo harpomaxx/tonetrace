@@ -31,6 +31,67 @@ def test_play_start_position_rewinds_when_reference_player_is_at_end() -> None:
 
 
 @pytest.mark.gui
+def test_pending_range_stops_playback_before_analysis_offscreen() -> None:
+    """Playback must honor the selected range end even before Analyze is run."""
+
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+    window.waveform.set_preview([0.0, 0.1], sample_rate=1, duration_seconds=120.0)
+
+    # No analysis yet.
+    assert window.state.analysis_duration_seconds is None
+    assert window._active_analysis_range() is None
+
+    # Select a range in the controls (as dragging the waveform would).
+    window.controls.set_analysis_range(30.0, 20.0)  # 30s..50s
+    assert window._active_analysis_range() == pytest.approx((30.0, 50.0))
+
+    # Simulate original-audio playback reaching the range end.
+    window.playback_mode = "original"
+    window._start_playback_clock(30.0)
+    window.playback_timer.start()
+    assert window._stop_if_past_analysis_end(49.0) is False  # still inside range
+    assert window._stop_if_past_analysis_end(50.5) is True  # past the end -> paused
+    assert window.playback_mode == "paused"
+    assert window.playback_timer.isActive() is False
+
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_play_both_ducks_original_below_midi_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+
+    # Both mode: original is ducked and stays below the MIDI level.
+    window._apply_playback_mix("both")
+    assert window.original_audio.volume() == pytest.approx(MainWindow.BOTH_ORIGINAL_VOLUME)
+    assert window.midi_audio.volume() == pytest.approx(MainWindow.BOTH_MIDI_VOLUME)
+    assert window.original_audio.volume() < window.midi_audio.volume()
+
+    # Solo modes restore the normal level on both players.
+    window._apply_playback_mix("original")
+    assert window.original_audio.volume() == pytest.approx(MainWindow.SOLO_VOLUME)
+    assert window.midi_audio.volume() == pytest.approx(MainWindow.SOLO_VOLUME)
+
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
 def test_playback_sync_helpers_keep_waveform_and_heatmap_playheads_together() -> None:
     pytest.importorskip("PySide6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -288,6 +349,7 @@ def test_waveform_widget_selection_handles_refine_range_offscreen() -> None:
 
     app = QApplication.instance() or QApplication([])
     widget = WaveformWidget()
+    widget.left_gutter = 0  # isolate the seconds<->x math from the timeline gutter
     widget.resize(100, 90)
     widget.set_preview([0.0, 0.5, -0.5], sample_rate=3, duration_seconds=20.0)
     widget.set_selection(5.0, 10.0)
@@ -311,6 +373,76 @@ def test_waveform_widget_selection_handles_refine_range_offscreen() -> None:
 
 
 @pytest.mark.gui
+def test_ranged_analysis_playheads_and_heatmap_share_timeline_offscreen() -> None:
+    """With a non-zero range start, waveform + heatmap map the same second to the
+    same screen fraction, and the heatmap frames align with the MIDI notes."""
+
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.main_window import MainWindow
+    from notegrabber.gui.state import GuiHeatmap, GuiMidiNote
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+    window.resize(1400, 820)
+    window.show()
+    app.processEvents()
+    window.waveform.set_preview([0.0] * 100, sample_rate=1, duration_seconds=210.0)
+    app.processEvents()
+
+    # Waveform gutter must mirror the piano roll keyboard for a shared mapping.
+    assert window.waveform.left_gutter == window.piano_roll.keyboard_width
+
+    start = 40.87
+    duration = 30.0
+    # Frame times offset onto the full-song timeline, as the analysis worker does.
+    frame_times = [start + i * 0.05 for i in range(int(duration / 0.05))]
+    midi_notes = list(range(21, 109))
+    activations = [[0.0] * len(midi_notes) for _ in frame_times]
+    heatmap = GuiHeatmap(
+        backend="basic-pitch",
+        midi_notes=midi_notes,
+        frame_times=frame_times,
+        activations=activations,
+        sample_rate=22_050,
+        hop_size=512,
+        window_size=2_048,
+    )
+    window.state.heatmap = heatmap
+    window.state.analysis_start_seconds = start
+    window.state.analysis_duration_seconds = duration
+    window.state.midi_preview_offset_seconds = start
+    window.state.extracted_notes = [GuiMidiNote(pitch=60, start_seconds=start, duration_seconds=0.5, velocity=90)]
+    window._set_display_notes(window.state.extracted_notes)
+    app.processEvents()
+
+    pr = window.piano_roll
+    wf = window.waveform
+
+    def pr_fraction(seconds: float) -> float:
+        return (pr.x_for_seconds(seconds) - pr.keyboard_width) / max(1, pr.width() - pr.keyboard_width)
+
+    def wf_fraction(seconds: float) -> float:
+        return (wf._x_for_seconds(seconds) - wf.left_gutter) / wf._time_width()
+
+    # Same second -> same fraction of the shared time area (both widgets at fit).
+    # A tiny residual (~1%) remains from the piano roll's trailing canvas pad;
+    # what matters is that the gross keyboard-gutter offset no longer shifts the
+    # two timelines apart (that was ~13% / 137px before the fix).
+    for seconds in (start, start + duration / 2, start + duration):
+        assert pr_fraction(seconds) == pytest.approx(wf_fraction(seconds), abs=0.02)
+
+    # The heatmap's first frame draws at the same x as a note at the range start,
+    # i.e. the heatmap is not shifted left relative to the notes.
+    assert pr.x_for_seconds(heatmap.frame_times[0]) == pr.x_for_seconds(start)
+
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
 def test_waveform_widget_range_selection_math_offscreen() -> None:
     pytest.importorskip("PySide6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -320,6 +452,7 @@ def test_waveform_widget_range_selection_math_offscreen() -> None:
 
     app = QApplication.instance() or QApplication([])
     widget = WaveformWidget()
+    widget.left_gutter = 0  # isolate the seconds<->x math from the timeline gutter
     widget.resize(100, 90)
     widget.set_preview([0.0, 0.5, -0.5], sample_rate=3, duration_seconds=20.0)
 

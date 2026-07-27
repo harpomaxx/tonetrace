@@ -27,6 +27,10 @@ class WaveformWidget(QWidget):
         self.samples: list[float] = []
         self.sample_rate = 0
         self.audio_duration_seconds = 0.0
+        # Left gutter matching the piano roll's keyboard width so the waveform
+        # timeline and the heatmap timeline share the same seconds->x mapping and
+        # their playheads line up on screen.
+        self.left_gutter = 54
         self.empty_message = "Open an audio file to show waveform"
         self.pitch_overview: PitchOverview | None = None
         self.playhead_seconds = 0.0
@@ -114,7 +118,7 @@ class WaveformWidget(QWidget):
         duration = self.duration_seconds()
         if duration <= 0:
             return self.rect()
-        x = int(max(0.0, min(1.0, max(0.0, seconds) / duration)) * max(1, self.width()))
+        x = int(self._x_for_seconds(seconds))
         return QRect(max(0, x - 3), 0, 7, self.height())
 
     def set_selection(self, start_seconds: float | None, duration_seconds: float | None) -> None:
@@ -210,14 +214,29 @@ class WaveformWidget(QWidget):
         if self.selection_start_seconds is not None and self.selection_duration_seconds is not None and self.selection_duration_seconds > 0:
             self.range_selected.emit(self.selection_start_seconds, self.selection_duration_seconds)
 
+    def _time_width(self) -> float:
+        """Pixel width of the drawable time area (canvas minus the left gutter)."""
+
+        return max(1.0, float(self.width()) - self.left_gutter)
+
+    def _x_for_seconds(self, seconds: float) -> float:
+        """Map a time in seconds to a canvas x, including the left gutter."""
+
+        duration = self.duration_seconds()
+        if duration <= 0:
+            return float(self.left_gutter)
+        ratio = max(0.0, min(1.0, max(0.0, seconds) / duration))
+        return self.left_gutter + ratio * self._time_width()
+
     def _clamped_x(self, x: float) -> float:
-        return max(0.0, min(float(self.width()), x))
+        return max(float(self.left_gutter), min(float(self.width()), x))
 
     def _seconds_at_x(self, x: float) -> float:
         duration = self.duration_seconds()
         if duration <= 0:
             return 0.0
-        return duration * self._clamped_x(x) / max(1.0, float(self.width()))
+        offset = self._clamped_x(x) - self.left_gutter
+        return duration * max(0.0, offset) / self._time_width()
 
     def _selection_from_pixels(self, start_x: float, end_x: float) -> tuple[float, float]:
         start_seconds = self._seconds_at_x(min(start_x, end_x))
@@ -228,8 +247,8 @@ class WaveformWidget(QWidget):
         duration = self.duration_seconds()
         if duration <= 0 or self.selection_start_seconds is None or self.selection_duration_seconds is None:
             return None
-        start_x = self.width() * self.selection_start_seconds / duration
-        end_x = self.width() * (self.selection_start_seconds + self.selection_duration_seconds) / duration
+        start_x = self._x_for_seconds(self.selection_start_seconds)
+        end_x = self._x_for_seconds(self.selection_start_seconds + self.selection_duration_seconds)
         return self._clamped_x(start_x), self._clamped_x(end_x)
 
     def _selection_hit_at(self, x: float) -> str | None:
@@ -272,13 +291,17 @@ class WaveformWidget(QWidget):
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.empty_message)
             return
 
+        gutter = self.left_gutter
+        time_width = int(self._time_width())
         clip = painter.clipBoundingRect()
-        clip_left = max(0, int(clip.left()) - 1) if not clip.isEmpty() else 0
+        clip_left = max(gutter, int(clip.left()) - 1) if not clip.isEmpty() else gutter
         clip_right = min(width, int(clip.right()) + 2) if not clip.isEmpty() else width
-        step = max(1, len(self.samples) // width)
+        step = max(1, len(self.samples) // max(1, time_width))
         painter.setPen(QPen(QColor(255, 170, 72), 1))
         for x in range(clip_left, clip_right):
-            start = x * step
+            start = (x - gutter) * step
+            if start < 0:
+                continue
             end = min(len(self.samples), start + step)
             if start >= end:
                 break
@@ -294,7 +317,7 @@ class WaveformWidget(QWidget):
 
         duration = self.duration_seconds()
         if duration > 0:
-            playhead_x = int(max(0.0, min(1.0, self.playhead_seconds / duration)) * width)
+            playhead_x = int(self._x_for_seconds(self.playhead_seconds))
             painter.setPen(QPen(QColor(255, 230, 120), 2))
             painter.drawLine(playhead_x, 0, playhead_x, height)
 
@@ -313,11 +336,13 @@ class WaveformWidget(QWidget):
         clip_left = clip.left() if not clip.isEmpty() else 0.0
         clip_right = clip.right() if not clip.isEmpty() else float(width)
         duration = max(self.duration_seconds(), overview.duration_seconds, 0.001)
+        gutter = self.left_gutter
+        time_width = self._time_width()
         band_height = max(1.0, overview_height / overview.band_count)
         for frame_index, time_seconds in enumerate(overview.frame_times):
-            x = int(max(0.0, min(1.0, time_seconds / duration)) * width)
+            x = int(gutter + max(0.0, min(1.0, time_seconds / duration)) * time_width)
             next_time = overview.frame_times[frame_index + 1] if frame_index + 1 < overview.frame_count else duration
-            next_x = int(max(0.0, min(1.0, next_time / duration)) * width)
+            next_x = int(gutter + max(0.0, min(1.0, next_time / duration)) * time_width)
             column_width = max(1, next_x - x)
             if x + column_width < clip_left or x > clip_right:
                 continue
@@ -339,11 +364,9 @@ class WaveformWidget(QWidget):
         duration = self.duration_seconds()
         if duration <= 0 or self.selection_start_seconds is None or self.selection_duration_seconds is None:
             return
-        start_ratio = max(0.0, min(1.0, self.selection_start_seconds / duration))
-        end_ratio = max(0.0, min(1.0, (self.selection_start_seconds + self.selection_duration_seconds) / duration))
-        x = int(start_ratio * width)
-        selection_width = max(1, int((end_ratio - start_ratio) * width))
-        end_x = x + selection_width
+        x = int(self._x_for_seconds(self.selection_start_seconds))
+        end_x = int(self._x_for_seconds(self.selection_start_seconds + self.selection_duration_seconds))
+        selection_width = max(1, end_x - x)
         painter.fillRect(x, 0, selection_width, height, QColor(255, 126, 24, 55))
         painter.setPen(QPen(QColor(255, 186, 64), 2))
         painter.drawLine(x, 0, x, height)
