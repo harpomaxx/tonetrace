@@ -113,6 +113,11 @@ QGroupBox[panel="accent"] QLabel, QGroupBox[panel="accent"] QCheckBox {
     color: #dceaff;
     font-weight: 650;
 }
+QLabel#knobValueLabel {
+    color: #ffd66b;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+}
 QGroupBox[panel="muted"] {
     border-color: #273040;
     background: #0d1118;

@@ -10,8 +10,8 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGridLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
-    QSlider,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -25,6 +25,7 @@ from notegrabber.analyzer import (
     CQT_THRESHOLD,
 )
 from notegrabber.gui.theme import polish_button
+from notegrabber.gui.widgets.knob import KnobWidget
 
 NOTE_SENSITIVITY_HELP = (
     "Basic Pitch note sensitivity. Higher values require stronger frame confidence, "
@@ -59,10 +60,10 @@ class AnalysisControls(QWidget):
         self.backend_combo = QComboBox()
         self.backend_combo.addItems(["basic-pitch", "cqt", "simple"])
 
-        self.note_sensitivity = self._slider(0, 100, int(BASIC_PITCH_FRAME_THRESHOLD * 100))
-        self.split_sensitivity = self._slider(0, 100, int(BASIC_PITCH_ONSET_THRESHOLD * 100))
-        self.cqt_threshold = self._slider(0, 100, int(CQT_THRESHOLD * 100))
-        self.min_duration = self._slider(0, 500, int(BASIC_PITCH_MIN_DURATION_SECONDS * 1000))
+        self.note_sensitivity = self._knob(0, 100, int(BASIC_PITCH_FRAME_THRESHOLD * 100))
+        self.split_sensitivity = self._knob(0, 100, int(BASIC_PITCH_ONSET_THRESHOLD * 100))
+        self.cqt_threshold = self._knob(0, 100, int(CQT_THRESHOLD * 100))
+        self.min_duration = self._knob(0, 500, int(BASIC_PITCH_MIN_DURATION_SECONDS * 1000))
         self.note_sensitivity.setToolTip(NOTE_SENSITIVITY_HELP)
         self.split_sensitivity.setToolTip(SPLIT_SENSITIVITY_HELP)
         self.cqt_threshold.setToolTip(CQT_THRESHOLD_HELP)
@@ -108,8 +109,8 @@ class AnalysisControls(QWidget):
         self.export_button.clicked.connect(self.export_requested.emit)
         self.delete_button.clicked.connect(self.delete_requested.emit)
         self.show_overlay.toggled.connect(self.overlay_toggled.emit)
-        for slider in (self.note_sensitivity, self.split_sensitivity, self.cqt_threshold, self.min_duration):
-            slider.valueChanged.connect(self.retune_requested.emit)
+        for knob in (self.note_sensitivity, self.split_sensitivity, self.cqt_threshold, self.min_duration):
+            knob.valueChanged.connect(lambda _value: self.retune_requested.emit())
 
     def backend(self) -> str:
         return self.backend_combo.currentText()
@@ -188,12 +189,49 @@ class AnalysisControls(QWidget):
         form = QFormLayout(group)
         form.setVerticalSpacing(10)
         form.addRow("Backend", self.backend_combo)
-        form.addRow(self._help_label("Note sensitivity ⓘ", NOTE_SENSITIVITY_HELP), self.note_sensitivity)
-        form.addRow(self._help_label("Split sensitivity ⓘ", SPLIT_SENSITIVITY_HELP), self.split_sensitivity)
-        form.addRow(self._help_label("CQT threshold ⓘ", CQT_THRESHOLD_HELP), self.cqt_threshold)
-        form.addRow(self._help_label("Min note duration ⓘ", MIN_DURATION_HELP), self.min_duration)
+        form.addRow(
+            self._help_label("Note sensitivity ⓘ", NOTE_SENSITIVITY_HELP),
+            self._knob_cell(self.note_sensitivity, self._format_percent),
+        )
+        form.addRow(
+            self._help_label("Split sensitivity ⓘ", SPLIT_SENSITIVITY_HELP),
+            self._knob_cell(self.split_sensitivity, self._format_percent),
+        )
+        form.addRow(
+            self._help_label("CQT threshold ⓘ", CQT_THRESHOLD_HELP),
+            self._knob_cell(self.cqt_threshold, self._format_percent),
+        )
+        form.addRow(
+            self._help_label("Min note duration ⓘ", MIN_DURATION_HELP),
+            self._knob_cell(self.min_duration, self._format_millis),
+        )
         form.addRow(self.show_overlay)
         return group
+
+    @staticmethod
+    def _format_percent(value: int) -> str:
+        return f"{value} %"
+
+    @staticmethod
+    def _format_millis(value: int) -> str:
+        return f"{value} ms"
+
+    def _knob_cell(self, knob: KnobWidget, formatter) -> QWidget:
+        """Lay a knob beside a live value label that mirrors its value."""
+
+        cell = QWidget()
+        layout = QHBoxLayout(cell)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        value_label = QLabel(formatter(knob.value()))
+        value_label.setObjectName("knobValueLabel")
+        value_label.setMinimumWidth(46)
+        value_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        knob.valueChanged.connect(lambda value, label=value_label, fmt=formatter: label.setText(fmt(value)))
+        layout.addWidget(knob)
+        layout.addWidget(value_label)
+        layout.addStretch(1)
+        return cell
 
     @staticmethod
     def _help_label(text: str, tooltip: str) -> QLabel:
@@ -223,11 +261,8 @@ class AnalysisControls(QWidget):
         return group
 
     @staticmethod
-    def _slider(minimum: int, maximum: int, value: int) -> QSlider:
-        slider = QSlider(Qt.Orientation.Horizontal)
-        slider.setRange(minimum, maximum)
-        slider.setValue(value)
-        return slider
+    def _knob(minimum: int, maximum: int, value: int) -> KnobWidget:
+        return KnobWidget(minimum, maximum, value, default=value)
 
     @staticmethod
     def _seconds_spin(value: float) -> QDoubleSpinBox:

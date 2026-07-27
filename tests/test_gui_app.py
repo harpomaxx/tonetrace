@@ -339,6 +339,50 @@ def test_transcription_controls_explain_sliders_offscreen() -> None:
 
 
 @pytest.mark.gui
+def test_transcription_knobs_expose_slider_api_and_feed_accessors_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.widgets.controls import AnalysisControls
+    from notegrabber.gui.widgets.knob import KnobWidget
+
+    app = QApplication.instance() or QApplication([])
+    controls = AnalysisControls()
+
+    # The four transcription controls are now knobs with the slider-compatible API.
+    for knob in (controls.note_sensitivity, controls.split_sensitivity, controls.cqt_threshold, controls.min_duration):
+        assert isinstance(knob, KnobWidget)
+
+    # setValue/value round-trips and feeds the analyzer accessors.
+    controls.note_sensitivity.setValue(80)
+    controls.split_sensitivity.setValue(40)
+    controls.cqt_threshold.setValue(25)
+    controls.min_duration.setValue(120)
+    assert controls.frame_threshold() == pytest.approx(0.80)
+    assert controls.onset_threshold() == pytest.approx(0.40)
+    assert controls.threshold() == pytest.approx(0.25)
+    assert controls.min_duration_seconds() == pytest.approx(0.120)
+
+    # valueChanged drives retune_requested.
+    fired = []
+    controls.retune_requested.connect(lambda: fired.append(True))
+    controls.note_sensitivity.setValue(81)
+    assert fired
+
+    # Clamping and the knob-specific default/reset behaviour.
+    knob = KnobWidget(0, 100, 30, default=30)
+    knob.setValue(999)
+    assert knob.value() == 100
+    knob.setValue(-5)
+    assert knob.value() == 0
+    # Double-click resets to the configured default.
+    knob.setValue(70)
+    knob.setValue(knob._default)
+    assert knob.value() == 30
+
+
+@pytest.mark.gui
 def test_waveform_widget_selection_handles_refine_range_offscreen() -> None:
     pytest.importorskip("PySide6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
