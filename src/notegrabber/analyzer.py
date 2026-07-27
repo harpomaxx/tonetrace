@@ -24,9 +24,17 @@ ACTIVITY_RATIO = 0.20
 PITCH_RATIO = 0.35
 CQT_THRESHOLD = 0.45
 MIN_NOTE_FRAMES = 1
-BASIC_PITCH_ONSET_THRESHOLD = 0.5
-BASIC_PITCH_FRAME_THRESHOLD = 0.3
-BASIC_PITCH_MIN_DURATION_SECONDS = 0.05
+# Defaults matched to NeuralNote's Basic Pitch usage, which gives noticeably
+# cleaner transcriptions than the previous ToneTrace defaults. NeuralNote uses a
+# lower onset threshold (easier note splitting), a higher frame threshold (more
+# confident frames), and the stock 11-frame minimum note length (127.7 ms, which
+# is Basic Pitch's own default) rather than our earlier permissive 50 ms.
+BASIC_PITCH_ONSET_THRESHOLD = 0.3
+BASIC_PITCH_FRAME_THRESHOLD = 0.5
+BASIC_PITCH_MIN_DURATION_SECONDS = 0.1277
+# Onset inference: derive extra onsets from rising edges in the note posteriorgram
+# (Basic Pitch's get_infered_onsets). On by default, matching NeuralNote.
+BASIC_PITCH_INFER_ONSETS = True
 BackendName = Literal["simple", "cqt", "basic-pitch"]
 
 
@@ -244,14 +252,26 @@ def analyze_basic_pitch(
     onset_threshold: float = BASIC_PITCH_ONSET_THRESHOLD,
     frame_threshold: float = BASIC_PITCH_FRAME_THRESHOLD,
     min_duration_seconds: float = BASIC_PITCH_MIN_DURATION_SECONDS,
+    infer_onsets: bool = BASIC_PITCH_INFER_ONSETS,
+    min_frequency: float | None = None,
+    max_frequency: float | None = None,
 ) -> tuple[list[MidiNote], dict[str, object]]:
-    """Analyze audio with Spotify Basic Pitch and return notes plus model salience."""
+    """Analyze audio with Spotify Basic Pitch and return notes plus model salience.
+
+    Rather than calling ``predict()`` (which hides note-creation controls), this
+    runs inference and then ``model_output_to_notes`` directly, so ``infer_onsets``
+    and the frequency bounds are real, tunable parameters -- the same controls
+    NeuralNote exposes. ``infer_onsets`` derives extra onsets from rising edges in
+    the note posteriorgram, catching note starts the onset head alone misses.
+    """
 
     try:
         with _suppress_basic_pitch_optional_backend_warnings():
             import basic_pitch
             from basic_pitch import constants as basic_pitch_constants
-            from basic_pitch.inference import predict
+            from basic_pitch.constants import AUDIO_SAMPLE_RATE, FFT_HOP
+            from basic_pitch.inference import run_inference
+            from basic_pitch.note_creation import model_output_to_notes
     except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional environment
         raise RuntimeError(
             "Basic Pitch backend requires optional dependencies; install with "
@@ -262,12 +282,18 @@ def analyze_basic_pitch(
     if not model_path.exists():
         raise RuntimeError("Basic Pitch ONNX model was not found; install `basic-pitch[onnx]`")
 
-    model_output, _midi_data, note_events = predict(
-        input_audio,
-        model_or_model_path=model_path,
-        onset_threshold=onset_threshold,
-        frame_threshold=frame_threshold,
-        minimum_note_length=min_duration_seconds * 1000.0,
+    model_output = run_inference(input_audio, model_path)
+    # Basic Pitch measures minimum note length in frames; convert from seconds the
+    # same way predict() does (round to whole frames at the annotation frame rate).
+    min_note_len = max(1, round(min_duration_seconds * (AUDIO_SAMPLE_RATE / FFT_HOP)))
+    _midi_data, note_events = model_output_to_notes(
+        model_output,
+        onset_thresh=onset_threshold,
+        frame_thresh=frame_threshold,
+        infer_onsets=infer_onsets,
+        min_note_len=min_note_len,
+        min_freq=min_frequency,
+        max_freq=max_frequency,
         midi_tempo=120,
     )
     notes = [_basic_pitch_event_to_midi_note(event) for event in note_events]

@@ -9,7 +9,13 @@ import subprocess
 from dataclasses import asdict
 from pathlib import Path
 
-from .analyzer import BackendName, analyze_wav_to_midi
+from .analyzer import (
+    BASIC_PITCH_FRAME_THRESHOLD,
+    BASIC_PITCH_MIN_DURATION_SECONDS,
+    BASIC_PITCH_ONSET_THRESHOLD,
+    BackendName,
+    analyze_wav_to_midi,
+)
 from .midi import MidiNote, TICKS_PER_SECOND
 
 
@@ -19,9 +25,9 @@ def create_visualization(
     backend: BackendName = "basic-pitch",
     render_midi: bool = True,
     threshold: float = 0.45,
-    onset_threshold: float = 0.5,
-    frame_threshold: float = 0.3,
-    min_duration_seconds: float = 0.05,
+    onset_threshold: float = BASIC_PITCH_ONSET_THRESHOLD,
+    frame_threshold: float = BASIC_PITCH_FRAME_THRESHOLD,
+    min_duration_seconds: float = BASIC_PITCH_MIN_DURATION_SECONDS,
 ) -> dict[str, Path | None]:
     """Analyze audio and write an HTML heatmap/MIDI preview directory."""
 
