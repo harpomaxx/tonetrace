@@ -63,12 +63,24 @@ QLabel#brandLabel {
 QLabel#brandLabel::first-letter {
     color: #ffb23f;
 }
-QLabel#fileLabel, QLabel#transportStatus {
+QLabel#fileLabel {
     color: #b8c4d6;
     background: #0d121a;
     border: 1px solid #202b3c;
     border-radius: 9px;
     padding: 7px 10px;
+}
+QLabel#transportStatus {
+    color: #ffe6b0;
+    font-size: 14px;
+    font-weight: 800;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #2a1a10,
+        stop:1 #1c130c);
+    border: 1px solid #7a4a1e;
+    border-left: 4px solid #ffb33f;
+    border-radius: 9px;
+    padding: 9px 13px;
 }
 QLabel#selectedNoteLabel {
     color: #cdd8e8;
@@ -116,7 +128,6 @@ QGroupBox[panel="accent"] QLabel, QGroupBox[panel="accent"] QCheckBox {
 QLabel#knobValueLabel {
     color: #ffd66b;
     font-weight: 800;
-    font-variant-numeric: tabular-nums;
 }
 QGroupBox[panel="muted"] {
     border-color: #273040;

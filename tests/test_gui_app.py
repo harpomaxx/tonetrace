@@ -364,10 +364,13 @@ def test_transcription_knobs_expose_slider_api_and_feed_accessors_offscreen() ->
     assert controls.threshold() == pytest.approx(0.25)
     assert controls.min_duration_seconds() == pytest.approx(0.120)
 
-    # valueChanged drives retune_requested.
+    # retune fires on committed edits (editingFinished), not on every value
+    # change, so dragging a knob does not retune per intermediate value.
     fired = []
     controls.retune_requested.connect(lambda: fired.append(True))
     controls.note_sensitivity.setValue(81)
+    assert not fired  # setValue alone must not retune
+    controls.note_sensitivity.editingFinished.emit()
     assert fired
 
     # Clamping and the knob-specific default/reset behaviour.
@@ -380,6 +383,47 @@ def test_transcription_knobs_expose_slider_api_and_feed_accessors_offscreen() ->
     knob.setValue(70)
     knob.setValue(knob._default)
     assert knob.value() == 30
+
+
+@pytest.mark.gui
+def test_knob_editing_finished_fires_on_commit_only_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.widgets.knob import KnobWidget
+
+    app = QApplication.instance() or QApplication([])
+    knob = KnobWidget(0, 100, 30, default=30)
+
+    committed = []
+    changed = []
+    knob.editingFinished.connect(lambda: committed.append(True))
+    knob.valueChanged.connect(lambda v: changed.append(v))
+
+    # Programmatic setValue emits valueChanged (live label) but never commits.
+    knob.setValue(50)
+    assert changed == [50]
+    assert committed == []
+
+    # A wheel step changes the value and commits immediately (no release event).
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+
+    wheel = QWheelEvent(
+        QPointF(20.0, 20.0),
+        QPointF(20.0, 20.0),
+        QPoint(0, 0),
+        QPoint(0, 120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    knob.wheelEvent(wheel)
+    assert committed == [True]  # exactly one commit from the wheel step
+
+    app.processEvents()
 
 
 @pytest.mark.gui
@@ -1080,7 +1124,7 @@ def test_main_window_edit_selected_note_rerenders_midi_preview_offscreen(monkeyp
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
     from PySide6.QtWidgets import QApplication
-    import notegrabber.gui.main_window as main_window_module
+    import notegrabber.gui.midi_preview_worker as preview_module
     from notegrabber.gui.main_window import MainWindow
     from notegrabber.gui.state import GuiHeatmap, GuiMidiNote
 
@@ -1088,7 +1132,7 @@ def test_main_window_edit_selected_note_rerenders_midi_preview_offscreen(monkeyp
         wav_path.write_bytes(b"edited midi preview")
         return wav_path, None
 
-    monkeypatch.setattr(main_window_module, "render_midi_to_wav", fake_render_midi_to_wav)
+    monkeypatch.setattr(preview_module, "render_midi_to_wav", fake_render_midi_to_wav)
 
     app = QApplication.instance() or QApplication([])
     window = MainWindow(render_midi=True)
@@ -1109,9 +1153,81 @@ def test_main_window_edit_selected_note_rerenders_midi_preview_offscreen(monkeyp
 
     window._apply_selected_note_edit()
 
+    # Rendering is debounced and off-thread; flush it synchronously for the test.
+    assert "updating" in window.statusBar().currentMessage()
+    window._flush_preview_render()
+
     assert window.state.rendered_midi_wav is not None
     assert window.state.rendered_midi_wav.read_bytes() == b"edited midi preview"
     assert "preview re-rendered" in window.statusBar().currentMessage()
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_midi_preview_render_is_debounced_and_supersedes_offscreen(monkeypatch, tmp_path) -> None:
+    """A burst of edits collapses to one off-thread render; stale results drop."""
+
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    import time
+
+    from PySide6.QtWidgets import QApplication
+    import notegrabber.gui.midi_preview_worker as preview_module
+    from notegrabber.gui.main_window import MainWindow
+    from notegrabber.gui.state import GuiHeatmap, GuiMidiNote
+
+    render_calls = []
+
+    def fake_render_midi_to_wav(_midi_path, wav_path):
+        render_calls.append(1)
+        wav_path.write_bytes(b"preview")
+        return wav_path, None
+
+    monkeypatch.setattr(preview_module, "render_midi_to_wav", fake_render_midi_to_wav)
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=True)
+    window.state.audio_path = tmp_path / "original.wav"
+    window.state.heatmap = GuiHeatmap(
+        backend="basic-pitch",
+        midi_notes=[60, 61],
+        frame_times=[0.0, 0.1],
+        activations=[[0.5, 0.5], [0.5, 0.5]],
+        sample_rate=10,
+        hop_size=1,
+        window_size=1,
+    )
+
+    # Five committed edits within the debounce window.
+    for i in range(5):
+        notes = [GuiMidiNote(pitch=60 + i % 2, start_seconds=0.0, duration_seconds=0.3, velocity=90)]
+        window._refresh_midi_preview(notes)
+
+    assert window._preview_request_id == 5
+    assert render_calls == []  # nothing rendered yet; all debounced
+
+    # Let the debounce fire and the worker thread finish.
+    deadline = time.time() + 3.0
+    while time.time() < deadline and (not render_calls or window.preview_runs):
+        app.processEvents()
+        time.sleep(0.02)
+    for _ in range(20):
+        app.processEvents()
+        time.sleep(0.01)
+
+    assert len(render_calls) == 1  # the burst collapsed into a single render
+    assert window.state.rendered_midi_wav is not None
+    assert "re-rendered" in window.statusBar().currentMessage()
+
+    # A stale completion (older render id) must be ignored.
+    window._preview_request_id = 99
+    window.state.rendered_midi_wav = None
+    stale = preview_module.MidiPreviewResult(render_id=5, rendered_wav=tmp_path / "stale.wav")
+    window._preview_render_finished(stale)
+    assert window.state.rendered_midi_wav is None  # dropped, not applied
+
     window.close()
     app.processEvents()
 

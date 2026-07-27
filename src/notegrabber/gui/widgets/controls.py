@@ -109,8 +109,12 @@ class AnalysisControls(QWidget):
         self.export_button.clicked.connect(self.export_requested.emit)
         self.delete_button.clicked.connect(self.delete_requested.emit)
         self.show_overlay.toggled.connect(self.overlay_toggled.emit)
+        # Retune only when a knob change is committed (drag release / wheel /
+        # key), not on every intermediate value, so dragging a knob does not
+        # re-extract notes and repaint dozens of times per second. Value labels
+        # still update live via valueChanged in _knob_cell.
         for knob in (self.note_sensitivity, self.split_sensitivity, self.cqt_threshold, self.min_duration):
-            knob.valueChanged.connect(lambda _value: self.retune_requested.emit())
+            knob.editingFinished.connect(self.retune_requested.emit)
 
     def backend(self) -> str:
         return self.backend_combo.currentText()

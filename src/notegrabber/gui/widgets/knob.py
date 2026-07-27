@@ -39,6 +39,11 @@ class KnobWidget(QWidget):
     """A rotary knob exposing the integer slider API used by AnalysisControls."""
 
     valueChanged = Signal(int)  # noqa: N815 - matches QSlider signal name
+    # Emitted when a value change is "committed": mouse-drag release, or
+    # immediately after a wheel/keyboard step (which have no release). Consumers
+    # that trigger expensive work (e.g. CQT retune) should use this, not
+    # valueChanged, so a drag does not recompute on every intermediate value.
+    editingFinished = Signal()  # noqa: N815 - matches Qt naming convention
 
     def __init__(self, minimum: int, maximum: int, value: int, *, default: int | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -47,6 +52,7 @@ class KnobWidget(QWidget):
         self._default = int(default) if default is not None else int(value)
         self._value = self._clamp(int(value))
         self._drag_last_y: float | None = None
+        self._drag_moved = False
         self.setMinimumSize(56, 56)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.SizeVerCursor)
@@ -86,6 +92,7 @@ class KnobWidget(QWidget):
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt API
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_last_y = float(event.position().y())
+            self._drag_moved = False
             event.accept()
             return
         super().mousePressEvent(event)
@@ -102,19 +109,29 @@ class KnobWidget(QWidget):
         pixels_per_span = 200.0
         if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             pixels_per_span *= 5.0
+        before = self._value
         self.setValue(self._value + delta_pixels * span / pixels_per_span)
+        if self._value != before:
+            self._drag_moved = True
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt API
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_last_y = None
+            # Commit the drag once, on release, so a sweep triggers one retune.
+            if self._drag_moved:
+                self._drag_moved = False
+                self.editingFinished.emit()
             event.accept()
             return
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt API
         if event.button() == Qt.MouseButton.LeftButton:
+            before = self._value
             self.setValue(self._default)
+            if self._value != before:
+                self.editingFinished.emit()
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
@@ -124,17 +141,27 @@ class KnobWidget(QWidget):
         if not steps:
             steps = event.pixelDelta().y() / 40.0
         if steps:
+            before = self._value
             self.setValue(self._value + int(round(steps)))
+            # Wheel has no release; commit immediately when the value changed.
+            if self._value != before:
+                self.editingFinished.emit()
             event.accept()
             return
         super().wheelEvent(event)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt API
         if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Right):
+            before = self._value
             self.setValue(self._value + 1)
+            if self._value != before:
+                self.editingFinished.emit()
             event.accept()
         elif event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Left):
+            before = self._value
             self.setValue(self._value - 1)
+            if self._value != before:
+                self.editingFinished.emit()
             event.accept()
         else:
             super().keyPressEvent(event)
