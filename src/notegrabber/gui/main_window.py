@@ -230,6 +230,9 @@ class MainWindow(QMainWindow):
         self.piano_scroll.setWidget(self.piano_roll)
         self.piano_scroll.setMinimumHeight(240)
         self.piano_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        # Repaint the whole canvas as it scrolls horizontally so the pinned
+        # keyboard (drawn at the visible left edge) does not smear or ghost.
+        self.piano_scroll.horizontalScrollBar().valueChanged.connect(self.piano_roll.update)
 
         right = QWidget()
         right_layout = QVBoxLayout(right)

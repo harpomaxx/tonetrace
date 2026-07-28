@@ -331,26 +331,48 @@ class PianoRollWidget(QWidget):
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Analyze audio to show heatmap and MIDI notes")
             return
 
-        self._draw_keyboard(painter)
         if self.show_heatmap:
             self._draw_heatmap(painter)
         self._draw_grid(painter)
         if self.show_notes:
             self._draw_notes(painter)
         self._draw_playhead(painter)
+        # Keyboard is drawn last and pinned to the visible left edge so it stays
+        # in view (opaque, over the content) while scrolling horizontally.
+        self._draw_keyboard(painter)
+
+    def _horizontal_scroll_offset(self) -> int:
+        """Return how far the canvas is scrolled left inside its scroll area.
+
+        The piano roll lives in a QScrollArea; when zoomed in, the canvas is
+        wider than the viewport and can scroll horizontally. This offset lets the
+        keyboard pin itself to the visible left edge instead of scrolling away.
+        """
+
+        viewport = self.parentWidget()
+        if viewport is None:
+            return 0
+        scroll_area = viewport.parentWidget()
+        bar = getattr(scroll_area, "horizontalScrollBar", None)
+        if bar is None:
+            return 0
+        return max(0, bar().value())
 
     def _draw_keyboard(self, painter: QPainter) -> None:
         assert self.heatmap is not None
-        painter.fillRect(0, 0, self.keyboard_width, self.height(), QColor(20, 24, 34))
+        # Pin to the visible left edge so the keyboard stays put while the
+        # heatmap scrolls horizontally underneath it.
+        left = self._horizontal_scroll_offset()
+        painter.fillRect(left, 0, self.keyboard_width, self.height(), QColor(20, 24, 34))
         painter.setPen(QColor(190, 200, 220))
         for index, pitch in enumerate(reversed(self.heatmap.midi_notes)):
             y = index * self.note_height
             if y > self.height():
                 break
             is_black = pitch % 12 in {1, 3, 6, 8, 10}
-            painter.fillRect(0, y, self.keyboard_width, self.note_height, QColor(32, 36, 48) if is_black else QColor(52, 57, 70))
+            painter.fillRect(left, y, self.keyboard_width, self.note_height, QColor(32, 36, 48) if is_black else QColor(52, 57, 70))
             if pitch % 12 == 0:
-                painter.drawText(4, y + self.note_height - 1, f"C{pitch // 12 - 1}")
+                painter.drawText(left + 4, y + self.note_height - 1, f"C{pitch // 12 - 1}")
 
     def _draw_heatmap(self, painter: QPainter) -> None:
         assert self.heatmap is not None
