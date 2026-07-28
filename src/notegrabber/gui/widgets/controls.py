@@ -170,25 +170,26 @@ class AnalysisControls(QWidget):
     def set_can_delete(self, enabled: bool) -> None:
         self.delete_button.setEnabled(enabled)
 
-    def build_action_bar(self) -> QWidget:
-        """Return a horizontal bar with the primary workflow buttons.
+    def build_action_bar(self) -> QGroupBox:
+        """Return a titled "Actions" group with the primary workflow buttons.
 
         Reuses the same button objects created in ``__init__`` so all existing
         signal wiring and enable/disable logic keeps working; only their layout
-        home changes. Placed above the waveform by the main window.
+        home changes. Placed above the waveform by the main window, matching the
+        Playback group's card style for a consistent top row.
         """
 
-        bar = QWidget()
-        bar.setObjectName("actionBar")
-        row = QHBoxLayout(bar)
-        row.setContentsMargins(0, 0, 0, 0)
+        group = QGroupBox("Actions")
+        group.setObjectName("actionBar")
+        group.setProperty("panel", "muted")
+        row = QHBoxLayout(group)
+        row.setContentsMargins(12, 4, 12, 8)
         row.setSpacing(8)
         row.addWidget(self.open_button)
         row.addWidget(self.analyze_button)
         row.addWidget(self.delete_button)
         row.addWidget(self.export_button)
-        row.addStretch(1)
-        return bar
+        return group
 
     def _build_range_group(self) -> QGroupBox:
         group = QGroupBox("Analysis range")

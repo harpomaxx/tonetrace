@@ -207,8 +207,17 @@ class MainWindow(QMainWindow):
     def _build_layout(self) -> None:
         top = QWidget()
         top_layout = QVBoxLayout(top)
-        top_layout.addWidget(self.transport)
-        top_layout.addWidget(self.controls.build_action_bar())
+        # One-line app status strip across the top.
+        top_layout.addWidget(self.transport.status_label)
+        # Action buttons and the Playback group share one row to save vertical space.
+        action_row = QWidget()
+        action_row_layout = QHBoxLayout(action_row)
+        action_row_layout.setContentsMargins(0, 0, 0, 0)
+        action_row_layout.setSpacing(10)
+        action_row_layout.addWidget(self.controls.build_action_bar())
+        action_row_layout.addStretch(1)
+        action_row_layout.addWidget(self.transport.playback_group)
+        top_layout.addWidget(action_row)
         top_layout.addWidget(self.file_label)
         top_layout.addWidget(self.waveform)
         self.stats_label = QLabel("Notes 0  ·  0:00  ·  — BPM  ·  —")

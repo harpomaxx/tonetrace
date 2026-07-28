@@ -72,15 +72,15 @@ QLabel#fileLabel {
 }
 QLabel#transportStatus {
     color: #ffe6b0;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 800;
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 #2a1a10,
         stop:1 #1c130c);
     border: 1px solid #7a4a1e;
     border-left: 4px solid #ffb33f;
-    border-radius: 9px;
-    padding: 9px 13px;
+    border-radius: 7px;
+    padding: 5px 12px;
 }
 QLabel#selectedNoteLabel {
     color: #cdd8e8;
@@ -219,6 +219,54 @@ QPushButton[role="transport"] {
     min-width: 74px;
     padding-left: 12px;
     padding-right: 12px;
+}
+/* Round, icon-only media-player transport buttons. */
+QPushButton[transportIcon="secondary"] {
+    min-width: 40px;
+    max-width: 40px;
+    min-height: 40px;
+    max-height: 40px;
+    padding: 0;
+    border-radius: 20px;
+    border: 1px solid #2b384b;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #1d2634,
+        stop:1 #10151f);
+}
+QPushButton[transportIcon="secondary"]:hover:!disabled {
+    border-color: #8a5a38;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #273449,
+        stop:1 #151e2d);
+}
+QPushButton[transportIcon="primary"] {
+    min-width: 52px;
+    max-width: 52px;
+    min-height: 52px;
+    max-height: 52px;
+    padding: 0;
+    border-radius: 26px;
+    border: 2px solid #ffb13d;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #d86d22,
+        stop:0.55 #a94a1c,
+        stop:1 #652b14);
+}
+QPushButton[transportIcon="primary"]:hover:!disabled {
+    border-color: #ffd46a;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #f07d28,
+        stop:0.55 #c25620,
+        stop:1 #7a3417);
+}
+QPushButton[transportIcon="primary"]:pressed:!disabled,
+QPushButton[transportIcon="secondary"]:pressed:!disabled {
+    background: #0d121b;
+}
+QPushButton[transportIcon="primary"]:disabled,
+QPushButton[transportIcon="secondary"]:disabled {
+    background: #141923;
+    border-color: #222a36;
 }
 QToolButton[compact="true"] {
     min-width: 64px;
