@@ -13,6 +13,7 @@ from .analyzer import (
     CQT_THRESHOLD,
     analyze_wav_to_midi,
 )
+from .separator import DEFAULT_SEPARATION_MODEL, SEPARATION_MODELS, separate_stems
 from .server import serve_upload_app
 from .visualizer import create_visualization
 
@@ -89,6 +90,35 @@ def build_parser() -> argparse.ArgumentParser:
     gui_parser.add_argument("--no-render-midi", action="store_true", help="do not render MIDI previews with TiMidity++")
     gui_parser.set_defaults(handler=_handle_gui)
 
+    separate_parser = subparsers.add_parser(
+        "separate",
+        help="split a mix into per-instrument stem WAVs (vocals/drums/bass/other)",
+        description=(
+            "Separate an audio file into stems using HT-Demucs (ONNX, no PyTorch). "
+            "Each stem is a WAV you can transcribe with `notegrabber analyze`. "
+            "Install with `python3 -m pip install -e '.[separate]'`."
+        ),
+    )
+    separate_parser.add_argument("input_audio", type=Path, help="input audio file to separate")
+    separate_parser.add_argument("--out-dir", required=True, type=Path, help="output directory for the stem WAV files")
+    separate_parser.add_argument(
+        "--model",
+        choices=tuple(SEPARATION_MODELS),
+        default=DEFAULT_SEPARATION_MODEL,
+        help=f"separation model (default: {DEFAULT_SEPARATION_MODEL}); htdemucs_6s adds guitar/piano but is heavier",
+    )
+    separate_parser.add_argument(
+        "--stems",
+        help="comma-separated subset of stems to write (default: all stems the model produces)",
+    )
+    separate_parser.add_argument(
+        "--precision",
+        choices=("fp16", "fp32"),
+        default="fp16",
+        help="model weight precision; fp16 is smaller/faster to download (default: fp16)",
+    )
+    separate_parser.set_defaults(handler=_handle_separate)
+
     return parser
 
 
@@ -150,6 +180,34 @@ def _handle_analyze(args: argparse.Namespace) -> int:
         return 1
 
     print(f"wrote {output_midi} ({len(notes)} note{'s' if len(notes) != 1 else ''})")
+    return 0
+
+
+def _handle_separate(args: argparse.Namespace) -> int:
+    input_audio: Path = args.input_audio
+    if not input_audio.exists():
+        print(f"notegrabber: input audio not found: {input_audio}", file=sys.stderr)
+        return 2
+    if not input_audio.is_file():
+        print(f"notegrabber: input audio is not a file: {input_audio}", file=sys.stderr)
+        return 2
+
+    stems = [s.strip() for s in args.stems.split(",") if s.strip()] if args.stems else None
+    try:
+        result = separate_stems(
+            input_audio,
+            args.out_dir,
+            model=args.model,
+            stems=stems,
+            precision=args.precision,
+        )
+    except Exception as exc:  # argparse-style CLI: report failure without a traceback.
+        print(f"notegrabber: separate failed: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"wrote {len(result.stem_paths)} stem(s) to {result.output_dir}:")
+    for name, path in result.stem_paths.items():
+        print(f"  {name}: {path}")
     return 0
 
 

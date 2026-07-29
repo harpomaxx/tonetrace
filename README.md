@@ -95,6 +95,7 @@ Any of the install commands above accepts a narrower extra in place of `gui`:
 [ml]            # CQT + Basic Pitch backends, no GUI
 [basic-pitch]   # Basic Pitch backend only
 [cqt]           # CQT backend only (librosa + numpy + soundfile)
+[separate]      # stem separation (HT-Demucs ONNX, no PyTorch) — combine with others
 (no extra)      # base package (simple backend, PCM WAV only)
 ```
 
@@ -134,6 +135,26 @@ notegrabber visualize input.wav --out-dir viewer-dir
 # Run a local upload/re-analysis web app:
 notegrabber serve --out-dir out/server
 ```
+
+### Stem separation
+
+Split a mix into per-instrument stems, then transcribe the one you want. Uses
+HT-Demucs via ONNX (pure numpy + onnxruntime, **no PyTorch**); the ~166 MB model
+auto-downloads on first use.
+
+```bash
+pip install 'notegrabber[separate]'   # opt-in extra (not in [gui])
+
+# Split into vocals / drums / bass / other:
+notegrabber separate song.mp3 --out-dir stems/
+
+# Only the stems you need, then transcribe one:
+notegrabber separate song.mp3 --out-dir stems/ --stems bass,vocals
+notegrabber analyze stems/song/bass.wav --out bass.mid --backend basic-pitch
+```
+
+`--model htdemucs_6s` adds `guitar` and `piano` stems (heavier; the piano stem is
+weaker). Separation is high quality but not fast — expect roughly real-time on CPU.
 
 Common tuning flags on `analyze` / `visualize`:
 

@@ -22,6 +22,7 @@ def test_notegrabber_help_lists_analyze_command() -> None:
     assert "visualize" in combined_output
     assert "serve" in combined_output
     assert "gui" in combined_output
+    assert "separate" in combined_output
 
 
 @pytest.mark.cli
@@ -74,6 +75,22 @@ def test_serve_help_documents_local_upload_options() -> None:
     assert "--no-render-midi" in combined_output
     assert "basic-pitch" in combined_output
     assert "upload" in combined_output
+
+
+@pytest.mark.cli
+@pytest.mark.tier0
+def test_separate_help_documents_stem_options() -> None:
+    command = [*notegrabber_command(), "separate", "--help"]
+
+    result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+
+    combined_output = f"{result.stdout}\n{result.stderr}".lower()
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
+    assert "--out-dir" in combined_output
+    assert "--model" in combined_output
+    assert "--stems" in combined_output
+    assert "htdemucs" in combined_output
+    assert any(term in combined_output for term in ("stem", "separate", "vocals"))
 
 
 @pytest.mark.cli

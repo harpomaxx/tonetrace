@@ -13,6 +13,7 @@ Python package under `src/notegrabber/`:
 - `cli.py` — command-line interface.
 - `analyzer.py` — audio analysis backends and heatmap generation.
 - `midi.py` — minimal Standard MIDI File writer.
+- `separator.py` — stem separation (split a mix into vocals/drums/bass/other WAVs). Thin, backend-swappable wrapper over the `demucs-onnx` package (HT-Demucs via pure numpy + onnxruntime, no PyTorch; model auto-downloads on first use). Optional `[separate]` extra; graceful "install the extra" error when missing. Output stems feed straight into `analyze`.
 - `visualizer.py` — generates a self-contained browser viewer.
 - `server.py` — local upload/re-analysis web server for generating fresh viewers from selected files; renders MIDI audio previews by default when TiMidity++ is available.
 - `gui/` — PySide6 standalone GUI app. Key modules:
@@ -36,6 +37,7 @@ notegrabber analyze input.wav --out output.mid --heatmap heatmap.json --backend 
 notegrabber visualize input.wav --out-dir viewer-dir
 notegrabber visualize input.wav --out-dir viewer-dir --backend basic-pitch --onset-threshold 0.5 --frame-threshold 0.3 --min-duration 0.05
 notegrabber serve --out-dir out/server
+notegrabber separate input.mp3 --out-dir stems/ --stems bass,vocals
 notegrabber gui
 notegrabber-gui
 ```
@@ -80,7 +82,7 @@ Run tests:
 NOTEGRABBER_BIN=notegrabber python3 -m pytest -q
 ```
 
-Current expected result: **100 passed** when optional ML and PySide6 GUI dependencies are installed.
+Current expected result: **123 passed** when optional ML and PySide6 GUI dependencies are installed. (Stem-separation tests mock `demucs_onnx`, so they run without downloading the model.)
 
 Quick GUI manual check:
 

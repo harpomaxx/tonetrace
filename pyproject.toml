@@ -33,6 +33,12 @@ ml = [
     "soundfile>=0.12",
     "basic-pitch[onnx]>=0.4",
 ]
+# Stem separation via HT-Demucs ONNX (pure numpy + onnxruntime, no PyTorch).
+# Auto-downloads the ~166 MB fp16 model on first use. Kept out of [gui] so the
+# desktop install stays lighter; opt in explicitly when you want stem splitting.
+separate = [
+    "demucs-onnx>=0.3",
+]
 # The GUI decodes MP3/FLAC/OGG, builds the pitch overview, and analyzes audio,
 # so it needs the audio/ML stack -- not just PySide6. Installing `.[gui]` must
 # give a GUI that can actually open a file and analyze it out of the box.

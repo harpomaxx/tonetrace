@@ -22,6 +22,20 @@ Tuning flags:
 - `--frame-threshold` for Basic Pitch.
 - `--min-duration` for minimum extracted note length.
 
+## Stem separation
+
+```bash
+notegrabber separate song.mp3 --out-dir stems/ --stems bass,vocals
+```
+
+Split a mix into per-instrument stem WAVs (`vocals`, `drums`, `bass`, `other`;
+`--model htdemucs_6s` adds `guitar`, `piano`) so you can transcribe one part at a
+time. Uses HT-Demucs via ONNX (pure numpy + onnxruntime, **no PyTorch**); the
+model auto-downloads on first use. Install the opt-in extra with
+`pip install '.[separate]'`. Each stem is a plain WAV you can pass to
+`notegrabber analyze`. High quality but roughly real-time on CPU. This is a
+CLI-first spike; GUI integration is future work.
+
 ## Heatmap JSON
 
 `--heatmap` writes a machine-readable pitch salience document with:
