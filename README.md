@@ -50,28 +50,52 @@ duration) are exposed on both the CLI and the GUI.
 
 ## Installation
 
-Clone the repo and install with the extras you need. Using a virtual environment
-is recommended. **For the desktop app, `.[gui]` is the one to use** — it is a
-complete, ready-to-run GUI (audio decoding, overview, and all backends
-included).
+Using a virtual environment is recommended. **For the desktop app, `.[gui]` is
+the extra to use** — it is a complete, ready-to-run GUI (audio decoding,
+overview, and all backends included).
+
+### Install from anywhere (no source checkout needed)
+
+You can install straight from the Git repo into any environment, then run
+`notegrabber-gui` from any directory:
 
 ```bash
-git clone https://github.com/harpomaxx/tonetrace.git
-cd tonetrace
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv ~/.venvs/tonetrace && source ~/.venvs/tonetrace/bin/activate
 
-# Native GUI, ready to open MP3/FLAC/OGG and analyze out of the box:
+# Install the GUI directly from GitHub:
+pip install 'notegrabber[gui] @ git+https://github.com/harpomaxx/tonetrace.git'
+
+notegrabber-gui          # launches from anywhere
+```
+
+Or build a wheel once and install that copy elsewhere (or on another machine):
+
+```bash
+git clone https://github.com/harpomaxx/tonetrace.git && cd tonetrace
+python3 -m pip install build && python3 -m build      # writes dist/*.whl
+# then, in any environment / on any machine:
+pip install '/path/to/notegrabber-0.1.0-py3-none-any.whl[gui]'
+```
+
+### Editable install (for development)
+
+```bash
+git clone https://github.com/harpomaxx/tonetrace.git && cd tonetrace
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e '.[gui]'
 ```
 
-Or install a narrower set of extras:
+### Choosing extras
 
-```bash
-pip install -e '.[standalone]'   # everything (same as .[gui]; kept for scripts)
-pip install -e '.[ml]'           # CQT + Basic Pitch backends, no GUI
-pip install -e '.[basic-pitch]'  # Basic Pitch backend only
-pip install -e '.[cqt]'          # CQT backend only (librosa + numpy + soundfile)
-pip install -e .                 # base package (simple backend, PCM WAV only)
+Any of the install commands above accepts a narrower extra in place of `gui`:
+
+```
+[gui]           # complete desktop app (GUI + audio decode + all backends)
+[standalone]    # same set as [gui]; kept for scripts
+[ml]            # CQT + Basic Pitch backends, no GUI
+[basic-pitch]   # Basic Pitch backend only
+[cqt]           # CQT backend only (librosa + numpy + soundfile)
+(no extra)      # base package (simple backend, PCM WAV only)
 ```
 
 ## Usage

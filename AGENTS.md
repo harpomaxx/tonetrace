@@ -111,6 +111,7 @@ These are working artifacts, not core source code.
 ## Development notes
 
 - GitHub repo: `harpomaxx/tonetrace`; default branch is `main`. The backlog lives in [GitHub Issues](https://github.com/harpomaxx/tonetrace/issues) (the old in-repo `issues/` folder was removed). Issues #1–#8 are fixed/closed (performance #1–#6 vectorized; #7 key detection and #8 transcription stats implemented in `key_detection.py` / `transcription_stats.py`).
+- Packaging: `python3 -m build` produces a wheel + sdist in `dist/` that install and run outside the source tree (`pip install 'dist/*.whl[gui]'`, then `notegrabber-gui` from anywhere). The GUI icon SVGs under `gui/resources/` are bundled via `[tool.hatch.build.targets.wheel] artifacts` and loaded at runtime with `Path(__file__)`, so keep that relative layout intact. `dist/`/`build/` are gitignored.
 - Keep the existing CLI contract stable unless tests/docs are updated together.
 - Prefer adding tests before changing analysis behavior.
 - Do not commit generated caches: `.pytest_cache/`, `__pycache__/`, etc.

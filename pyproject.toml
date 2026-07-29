@@ -5,10 +5,18 @@ build-backend = "hatchling.build"
 [project]
 name = "notegrabber"
 version = "0.1.0"
-description = "Small baseline CLI for deterministic WAV-to-MIDI transcription fixtures"
+description = "ToneTrace: audio-to-MIDI transcription with a CLI, browser viewer, and native GUI"
+readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
+authors = [{ name = "Harpo MAxx" }]
+keywords = ["midi", "transcription", "audio", "basic-pitch", "music", "gui"]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/harpomaxx/tonetrace"
+Repository = "https://github.com/harpomaxx/tonetrace"
+Issues = "https://github.com/harpomaxx/tonetrace/issues"
 
 [project.optional-dependencies]
 cqt = [
@@ -51,3 +59,15 @@ notegrabber-gui = "notegrabber.gui.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/notegrabber"]
+# Ensure the bundled GUI icon SVGs (loaded at runtime via Path(__file__)) ship in
+# the wheel, so a non-editable install from any directory has working buttons.
+artifacts = ["src/notegrabber/gui/resources/**/*.svg"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/notegrabber/**",
+    "README.md",
+    "LICENSE",
+    "AGENTS.md",
+    "FEATURES.md",
+]
