@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 
 from PySide6.QtCore import QElapsedTimer, QThread, QTimer, Qt, QUrl
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
@@ -28,6 +29,7 @@ from notegrabber.analyzer import BackendName
 from notegrabber.midi import write_midi
 
 from .analysis_worker import AnalysisRequest, AnalysisResult, AnalysisWorker
+from .edit_history import EditHistory
 from .transcription_stats import compute_stats
 from .midi_preview_worker import MidiPreviewRequest, MidiPreviewResult, MidiPreviewWorker, render_midi_preview
 from .overview_worker import OverviewResult, OverviewWorker
@@ -126,9 +128,26 @@ class MainWindow(QMainWindow):
         self.selected_note_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._set_note_inspector_enabled(False)
 
+        # Undo/redo history for committed note edits (delete, drag, inspector
+        # apply, CQT retune). Baseline is set when a fresh analysis lands.
+        self.edit_history: EditHistory = EditHistory()
+        # Note list captured at the start of an edit gesture, recorded to history
+        # on commit so a multi-tick drag is a single undo step.
+        self._pre_edit_snapshot: list[GuiMidiNote] | None = None
+
         self._build_layout()
         self._connect_signals()
         self._apply_style()
+        self._install_shortcuts()
+
+    def _install_shortcuts(self) -> None:
+        undo = QShortcut(QKeySequence.StandardKey.Undo, self)  # Ctrl+Z
+        undo.activated.connect(self._undo_edit)
+        # Bind both common redo conventions: Ctrl+Y (Windows/Linux) and
+        # Ctrl+Shift+Z (macOS / many DAWs), so redo works whatever the user expects.
+        for sequence in ("Ctrl+Y", "Ctrl+Shift+Z"):
+            redo = QShortcut(QKeySequence(sequence), self)
+            redo.activated.connect(self._redo_edit)
 
     def load_audio(self, path: Path) -> None:
         """Load an audio file into the GUI without analyzing it yet."""
@@ -427,6 +446,8 @@ class MainWindow(QMainWindow):
         self.state.heatmap = result.heatmap
         self.state.extracted_notes = result.notes
         self.state.tuned_notes = None
+        # A fresh analysis is the new undo baseline; discard prior edit history.
+        self.edit_history.begin(result.notes)
         self.state.analysis_start_seconds = result.analysis_start_seconds
         self.state.analysis_duration_seconds = result.analysis_duration_seconds
         self.state.midi_preview_offset_seconds = result.midi_preview_offset_seconds
@@ -491,6 +512,7 @@ class MainWindow(QMainWindow):
                 threshold=self.state.threshold,
                 min_duration_seconds=self.state.min_duration,
             )
+            self.edit_history.record(self.state.current_notes)
             self.state.tuned_notes = tuned
             self._select_note(None)
             self._set_display_notes(tuned)
@@ -530,11 +552,37 @@ class MainWindow(QMainWindow):
             return
         current = list(self.state.current_notes)
         deleted = current[self.selected_note_index]
+        self.edit_history.record(current)
         self.state.tuned_notes = delete_gui_note(current, self.selected_note_index)
         self._select_note(None)
         self._set_display_notes(self.state.tuned_notes)
         preview_status = self._refresh_midi_preview(self.state.tuned_notes)
         self._set_status(f"Deleted MIDI {deleted.pitch}. Export writes {len(self.state.tuned_notes)} edited notes.{preview_status}")
+
+    def _undo_edit(self) -> None:
+        restored = self.edit_history.undo(self.state.current_notes)
+        if restored is None:
+            self._set_status("Nothing to undo.")
+            return
+        self._restore_notes(restored, "Undid edit")
+
+    def _redo_edit(self) -> None:
+        restored = self.edit_history.redo(self.state.current_notes)
+        if restored is None:
+            self._set_status("Nothing to redo.")
+            return
+        self._restore_notes(restored, "Redid edit")
+
+    def _restore_notes(self, notes: list[GuiMidiNote], action: str) -> None:
+        """Apply an undo/redo result: swap in the notes and refresh everything."""
+
+        if self.state.heatmap is None:
+            return
+        self.state.tuned_notes = list(notes)
+        self._select_note(None)
+        self._set_display_notes(self.state.tuned_notes)
+        preview_status = self._refresh_midi_preview(self.state.tuned_notes)
+        self._set_status(f"{action}. {len(self.state.tuned_notes)} notes.{preview_status}")
 
     def _apply_selected_note_edit(self) -> None:
         if self.selected_note_index is None:
@@ -582,6 +630,11 @@ class MainWindow(QMainWindow):
         current = list(self.state.current_notes)
         if index < 0 or index >= len(current):
             return
+        # Snapshot the note list once at the start of an edit gesture (before any
+        # mutation), so a multi-tick drag records a single undo step for the whole
+        # gesture rather than one per intermediate move.
+        if self._pre_edit_snapshot is None:
+            self._pre_edit_snapshot = current
         self.state.tuned_notes = update_gui_note(
             current,
             index,
@@ -601,6 +654,10 @@ class MainWindow(QMainWindow):
             self.selected_note_label.setText(self._note_summary(edited_note))
             self._set_status(f"Editing selected note… release to update MIDI preview. Export writes {len(self.state.tuned_notes)} edited notes.")
             return
+        # Committed edit: push the pre-gesture snapshot to the undo history.
+        if self._pre_edit_snapshot is not None:
+            self.edit_history.record(self._pre_edit_snapshot)
+            self._pre_edit_snapshot = None
         self._set_display_notes(self.state.tuned_notes)
         self._select_note(index)
         preview_status = self._refresh_midi_preview(self.state.tuned_notes)

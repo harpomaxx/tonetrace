@@ -1438,3 +1438,93 @@ def test_main_window_delete_selected_note_updates_tuned_notes_offscreen() -> Non
     assert "No note selected" == window.selected_note_label.text()
     window.close()
     app.processEvents()
+
+
+@pytest.mark.gui
+def test_undo_redo_note_edits_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.main_window import MainWindow
+    from notegrabber.gui.state import GuiHeatmap, GuiMidiNote
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+    window.state.heatmap = GuiHeatmap(
+        backend="basic-pitch",
+        midi_notes=[60, 61, 62, 63, 64],
+        frame_times=[0.0, 0.1],
+        activations=[[0.9, 0.8, 0.7, 0.6, 0.5], [0.7, 0.6, 0.5, 0.4, 0.3]],
+        sample_rate=10,
+        hop_size=1,
+        window_size=1,
+    )
+    baseline = [
+        GuiMidiNote(pitch=60, start_seconds=0.0, duration_seconds=0.5, velocity=90),
+        GuiMidiNote(pitch=64, start_seconds=1.0, duration_seconds=0.5, velocity=90),
+    ]
+    # Establish the analysis baseline (as _analysis_finished would).
+    window.state.extracted_notes = baseline
+    window.edit_history.begin(baseline)
+    window._set_display_notes(baseline)
+
+    # Nothing to undo at baseline.
+    window._undo_edit()
+    assert [n.pitch for n in window.state.current_notes] == [60, 64]
+
+    # Delete the first note, then undo should bring it back.
+    window._select_note(0)
+    window._delete_selected_note()
+    assert [n.pitch for n in window.state.current_notes] == [64]
+    window._undo_edit()
+    assert [n.pitch for n in window.state.current_notes] == [60, 64]
+    # Redo re-applies the delete.
+    window._redo_edit()
+    assert [n.pitch for n in window.state.current_notes] == [64]
+
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_uncommitted_drag_is_one_undo_step_offscreen() -> None:
+    """A multi-tick drag must record a single undo step, not one per move."""
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.main_window import MainWindow
+    from notegrabber.gui.state import GuiHeatmap, GuiMidiNote
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+    window.state.heatmap = GuiHeatmap(
+        backend="basic-pitch",
+        midi_notes=[60, 61, 62, 63, 64],
+        frame_times=[0.0, 0.1],
+        activations=[[0.9, 0.8, 0.7, 0.6, 0.5], [0.7, 0.6, 0.5, 0.4, 0.3]],
+        sample_rate=10,
+        hop_size=1,
+        window_size=1,
+    )
+    start = [GuiMidiNote(pitch=60, start_seconds=0.0, duration_seconds=0.5, velocity=90)]
+    window.state.extracted_notes = start
+    window.edit_history.begin(start)
+    window._set_display_notes(start)
+
+    # Simulate a drag: several uncommitted moves, then one committed release.
+    window._edit_note_from_piano_roll(0, 0.1, 0.5, 61, 90, committed=False)
+    window._edit_note_from_piano_roll(0, 0.2, 0.5, 62, 90, committed=False)
+    window._edit_note_from_piano_roll(0, 0.3, 0.5, 63, 90, committed=True)
+    assert window.state.current_notes[0].pitch == 63
+
+    # A single undo returns to the pre-drag state (pitch 60), not an intermediate.
+    window._undo_edit()
+    assert window.state.current_notes[0].pitch == 60
+    # Nothing more to undo (the whole drag was one step).
+    window._undo_edit()
+    assert window.state.current_notes[0].pitch == 60
+
+    window.close()
+    app.processEvents()
