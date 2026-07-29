@@ -14,6 +14,7 @@ from .analyzer import (
     analyze_wav_to_midi,
 )
 from .separator import (
+    DEFAULT_SEGMENT_SECONDS,
     DEFAULT_SEPARATION_MODEL,
     SEPARATION_MODELS,
     estimate_separation_seconds,
@@ -88,9 +89,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="model weight precision; fp16 is smaller/faster to download (default: fp16)",
     )
     separate_parser.add_argument(
+        "--segment",
+        type=float,
+        default=DEFAULT_SEGMENT_SECONDS,
+        help=(
+            "process long files in segments of this many seconds to bound memory "
+            f"(default: {DEFAULT_SEGMENT_SECONDS:g}); use a smaller value on low-RAM "
+            "machines, or 0 to force a single whole-file pass"
+        ),
+    )
+    separate_parser.add_argument(
         "--quiet",
         action="store_true",
-        help="hide the chunk-by-chunk progress display (shown by default; separation is roughly real-time on CPU)",
+        help="hide the progress display (shown by default; separation is roughly real-time on CPU)",
     )
     separate_parser.set_defaults(handler=_handle_separate)
 
@@ -236,6 +247,9 @@ def _handle_separate(args: argparse.Namespace) -> int:
     stems = [s.strip() for s in args.stems.split(",") if s.strip()] if args.stems else None
     import time as _time
 
+    # --segment 0 forces a single whole-file pass; otherwise segment long files.
+    segment_seconds = args.segment if args.segment and args.segment > 0 else None
+
     def _work():
         # Keep the library quiet; we render our own progress.
         return separate_stems(
@@ -245,6 +259,7 @@ def _handle_separate(args: argparse.Namespace) -> int:
             stems=stems,
             precision=args.precision,
             verbose=False,
+            segment_seconds=segment_seconds,
         )
 
     eta = estimate_separation_seconds(read_audio_duration(input_audio))

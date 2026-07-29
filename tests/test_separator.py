@@ -163,3 +163,75 @@ def test_read_audio_duration_missing_file_returns_none(tmp_path) -> None:
     from notegrabber.separator import read_audio_duration
 
     assert read_audio_duration(tmp_path / "nope.wav") is None
+
+
+def _install_fake_demucs_passthrough(monkeypatch) -> None:
+    """Fake demucs that copies the input to each stem (so segments are verifiable)."""
+
+    import soundfile as sf
+
+    fake = types.ModuleType("demucs_onnx")
+
+    def separate(input_path, output_dir, *, model, stems, precision, verbose, progress, output_format):
+        data, sr = sf.read(str(input_path), dtype="float32", always_2d=True)
+        names = stems if stems is not None else list(SEPARATION_MODELS[model])
+        for name in names:
+            sf.write(str(Path(output_dir) / f"{name}.wav"), data, sr, subtype="PCM_16")
+        return {name: object() for name in names}
+
+    fake.separate = separate  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "demucs_onnx", fake)
+
+
+def test_long_file_is_separated_in_segments_and_stitched(monkeypatch, tmp_path) -> None:
+    import numpy as np
+    import soundfile as sf
+
+    _install_fake_demucs_passthrough(monkeypatch)
+
+    # Build a ~5s stereo file and force 2s segments so several segments run.
+    sr = 8000
+    total_frames = sr * 5
+    ramp = np.linspace(0.0, 1.0, total_frames, dtype="float32")
+    audio = np.stack([ramp, ramp], axis=1)  # identifiable per-sample values
+    src = tmp_path / "long.wav"
+    sf.write(str(src), audio, sr, subtype="PCM_16")
+
+    out = tmp_path / "stems"
+    result = separate_stems(src, out, model="htdemucs", segment_seconds=2.0)
+
+    assert set(result.stem_paths) == {"drums", "bass", "other", "vocals"}
+    # The stitched output must have the same length as the input (segments joined).
+    for path in result.stem_paths.values():
+        stitched, _ = sf.read(str(path), dtype="float32", always_2d=True)
+        assert stitched.shape[0] == total_frames, (path, stitched.shape[0], total_frames)
+        # Passthrough fake copies input, so the ramp should be preserved end to end.
+        assert stitched[0, 0] == pytest.approx(0.0, abs=1e-3)
+        assert stitched[-1, 0] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_short_file_skips_segmenting(monkeypatch, tmp_path) -> None:
+    import numpy as np
+    import soundfile as sf
+
+    recorder: dict = {"calls": 0}
+    fake = types.ModuleType("demucs_onnx")
+
+    def separate(input_path, output_dir, *, model, stems, precision, verbose, progress, output_format):
+        recorder["calls"] += 1
+        names = stems if stems is not None else list(SEPARATION_MODELS[model])
+        for name in names:
+            Path(output_dir, f"{name}.wav").write_bytes(b"RIFFfake")
+        return {name: object() for name in names}
+
+    fake.separate = separate  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "demucs_onnx", fake)
+
+    sr = 8000
+    audio = np.zeros((sr, 2), dtype="float32")  # 1s < default segment
+    src = tmp_path / "short.wav"
+    sf.write(str(src), audio, sr, subtype="PCM_16")
+
+    separate_stems(src, tmp_path / "stems", model="htdemucs", segment_seconds=39.0)
+    # A short file is one whole-file pass, not multiple segment passes.
+    assert recorder["calls"] == 1

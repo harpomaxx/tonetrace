@@ -184,6 +184,11 @@ estimate from the audio length — it over-predicts on a GPU. Pass `--quiet` to
 suppress the progress display. A GPU (`pip install onnxruntime-gpu`) makes it
 dramatically faster.
 
+Long files are separated **in segments** (default ~39 s) and streamed to disk so
+peak memory stays bounded — a full song does not have to fit in RAM at once. On a
+low-memory machine use a smaller `--segment` (e.g. `--segment 20`); `--segment 0`
+forces a single whole-file pass.
+
 Common tuning flags on `analyze`:
 
 - `--threshold` — CQT heatmap-to-note activation threshold
