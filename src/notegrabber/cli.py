@@ -13,7 +13,13 @@ from .analyzer import (
     CQT_THRESHOLD,
     analyze_wav_to_midi,
 )
-from .separator import DEFAULT_SEPARATION_MODEL, SEPARATION_MODELS, separate_stems
+from .separator import (
+    DEFAULT_SEPARATION_MODEL,
+    SEPARATION_MODELS,
+    estimate_separation_seconds,
+    read_audio_duration,
+    separate_stems,
+)
 from .server import serve_upload_app
 from .visualizer import create_visualization
 
@@ -199,11 +205,13 @@ _STEM_ICONS = {
 }
 
 
-def _run_with_spinner(work, *, label: str, stream) -> object:
+def _run_with_spinner(work, *, label: str, stream, eta_seconds: float | None = None) -> object:
     """Run ``work()`` on a thread while animating a spinner + elapsed timer.
 
-    Returns the work's result, or re-raises its exception. Falls back to a single
-    static line when the stream is not an interactive TTY (e.g. piped to a file).
+    When ``eta_seconds`` is given, the spinner shows ``elapsed / ~eta`` and, if
+    the run overruns the estimate, switches to a ``finishing…`` note. Returns the
+    work's result, or re-raises its exception. Falls back to a quiet wait when the
+    stream is not an interactive TTY (e.g. piped to a file).
     """
 
     import threading
@@ -230,13 +238,22 @@ def _run_with_spinner(work, *, label: str, stream) -> object:
         frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
         thread.start()
         i = 0
+        max_len = 0
         while thread.is_alive():
             elapsed = time.monotonic() - start
-            print(f"\r  {frames[i % len(frames)]}  {label}   {elapsed:5.1f}s", end="", file=stream, flush=True)
+            if eta_seconds is None:
+                timing = f"{elapsed:5.1f}s"
+            elif elapsed <= eta_seconds:
+                timing = f"{elapsed:5.1f}s / ~{eta_seconds:.0f}s"
+            else:
+                timing = f"{elapsed:5.1f}s / ~{eta_seconds:.0f}s (finishing…)"
+            line = f"  {frames[i % len(frames)]}  {label}   {timing}"
+            max_len = max(max_len, len(line))
+            print(f"\r{line}", end="", file=stream, flush=True)
             i += 1
             thread.join(timeout=0.1)
         # Clear the spinner line.
-        print("\r" + " " * (len(label) + 24) + "\r", end="", file=stream, flush=True)
+        print("\r" + " " * max_len + "\r", end="", file=stream, flush=True)
 
     if "error" in box:
         raise box["error"]
@@ -266,13 +283,20 @@ def _handle_separate(args: argparse.Namespace) -> int:
             verbose=False,
         )
 
+    eta = estimate_separation_seconds(read_audio_duration(input_audio))
     started = _time.monotonic()
     try:
         if args.quiet:
             result = _work()
         else:
-            print(f"\n  Separating {input_audio.name}  ·  {args.model}  ·  ~real-time on CPU", file=sys.stderr)
-            result = _run_with_spinner(_work, label=f"separating {input_audio.name}", stream=sys.stderr)
+            eta_note = f"  ·  est. ~{eta:.0f}s" if eta is not None else ""
+            print(f"\n  Separating {input_audio.name}  ·  {args.model}  ·  ~real-time on CPU{eta_note}", file=sys.stderr)
+            result = _run_with_spinner(
+                _work,
+                label=f"separating {input_audio.name}",
+                stream=sys.stderr,
+                eta_seconds=eta,
+            )
     except Exception as exc:  # argparse-style CLI: report failure without a traceback.
         print(f"notegrabber: separate failed: {exc}", file=sys.stderr)
         return 1

@@ -156,10 +156,12 @@ notegrabber analyze stems/song/bass.wav --out bass.mid --backend basic-pitch
 `--model htdemucs_6s` adds `guitar` and `piano` stems (heavier; the piano stem is
 weaker). Separation is high quality but not fast — expect roughly real-time on
 CPU, so a 4-minute song takes a few minutes. A **live spinner with an elapsed
-timer** (on stderr) shows it is working, followed by a tidy per-stem summary; the
-stem file paths are printed on stdout (one per line) for scripting. Pass
-`--quiet` to suppress the progress display. A GPU (`pip install onnxruntime-gpu`)
-makes it dramatically faster.
+timer and a rough ETA** (on stderr) shows it is working (e.g.
+`separating song.mp3   12.3s / ~40s`), followed by a tidy per-stem summary; the
+stem file paths are printed on stdout (one per line) for scripting. The ETA is an
+estimate from the audio length — it over-predicts on a GPU. Pass `--quiet` to
+suppress the progress display. A GPU (`pip install onnxruntime-gpu`) makes it
+dramatically faster.
 
 Common tuning flags on `analyze` / `visualize`:
 

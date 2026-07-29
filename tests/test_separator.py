@@ -138,3 +138,28 @@ def test_run_with_spinner_propagates_errors() -> None:
 
     with pytest.raises(ValueError, match="kaboom"):
         _run_with_spinner(boom, label="working", stream=io.StringIO())
+
+
+def test_estimate_separation_seconds_scales_with_duration() -> None:
+    from notegrabber.separator import estimate_separation_seconds
+
+    short = estimate_separation_seconds(5.0)     # 1 chunk
+    long = estimate_separation_seconds(240.0)    # ~31 chunks
+    assert short is not None and long is not None
+    assert long > short
+    # A ~4-minute song should estimate on the order of minutes, not seconds.
+    assert long > 60
+
+
+def test_estimate_separation_seconds_handles_unknown_and_zero() -> None:
+    from notegrabber.separator import estimate_separation_seconds
+
+    assert estimate_separation_seconds(None) is None
+    assert estimate_separation_seconds(0.0) is None
+    assert estimate_separation_seconds(-3.0) is None
+
+
+def test_read_audio_duration_missing_file_returns_none(tmp_path) -> None:
+    from notegrabber.separator import read_audio_duration
+
+    assert read_audio_duration(tmp_path / "nope.wav") is None

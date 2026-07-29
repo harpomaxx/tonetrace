@@ -28,6 +28,42 @@ SEPARATION_MODELS: dict[str, tuple[str, ...]] = {
 DEFAULT_SEPARATION_MODEL = "htdemucs"
 PrecisionName = str  # "fp16" | "fp32"
 
+# HT-Demucs processes audio in fixed windows of this many seconds; separation
+# time scales with the number of windows. Used only to show a rough ETA.
+SEPARATION_CHUNK_SECONDS = 7.8
+# Rough per-chunk compute cost and a fixed model/session warmup, for the ETA.
+# These are deliberately conservative CPU estimates; the display marks the value
+# as approximate ("~") because the true rate varies with hardware and load. A
+# GPU is far faster, so the estimate will over-predict there (harmless).
+_ETA_PER_CHUNK_SECONDS = 10.0
+_ETA_OVERHEAD_SECONDS = 4.0
+
+
+def read_audio_duration(path: Path) -> float | None:
+    """Return the audio duration in seconds, or None if it cannot be read cheaply."""
+
+    try:
+        import soundfile as sf  # type: ignore[import-not-found]
+
+        return float(sf.info(str(path)).duration)
+    except Exception:
+        return None
+
+
+def estimate_separation_seconds(duration_seconds: float | None) -> float | None:
+    """Rough estimate of how long separation will take for the given audio length.
+
+    Based on the chunk model (``overhead + n_chunks * per_chunk``). Returns None
+    when the duration is unknown. This is an approximation, not a guarantee.
+    """
+
+    if duration_seconds is None or duration_seconds <= 0:
+        return None
+    import math
+
+    n_chunks = max(1, math.ceil(duration_seconds / SEPARATION_CHUNK_SECONDS))
+    return _ETA_OVERHEAD_SECONDS + n_chunks * _ETA_PER_CHUNK_SECONDS
+
 
 @dataclass(frozen=True)
 class SeparationResult:
