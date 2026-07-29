@@ -4,7 +4,7 @@
 
 This repository is a Linux/free-software clone/spike inspired by noteGRABBER-style workflows: analyze an audio sample, visualize pitch salience as a piano-roll heatmap, extract candidate MIDI notes, and let the user compare the original audio with the generated MIDI.
 
-Current scope is **CLI + local web visualization/server + native standalone GUI app**. No VST/LV2/CLAP plugin has been implemented yet.
+Current scope is **CLI (transcription + stem separation) + native standalone GUI app**. No VST/LV2/CLAP plugin has been implemented yet. (An earlier browser viewer / upload server was removed in favor of the native GUI.)
 
 ## Current implementation
 
@@ -14,8 +14,7 @@ Python package under `src/notegrabber/`:
 - `analyzer.py` — audio analysis backends and heatmap generation.
 - `midi.py` — minimal Standard MIDI File writer.
 - `separator.py` — stem separation (split a mix into vocals/drums/bass/other WAVs). Thin, backend-swappable wrapper over the `demucs-onnx` package (HT-Demucs via pure numpy + onnxruntime, no PyTorch; model auto-downloads on first use). Optional `[separate]` extra; graceful "install the extra" error when missing. Output stems feed straight into `analyze`.
-- `visualizer.py` — generates a self-contained browser viewer.
-- `server.py` — local upload/re-analysis web server for generating fresh viewers from selected files; renders MIDI audio previews by default when TiMidity++ is available.
+- `midi_render.py` — renders MIDI to WAV with TiMidity++ when it is on PATH (`render_midi_to_wav`); shared by the GUI's edited-MIDI preview. Degrades gracefully when TiMidity++ is missing.
 - `gui/` — PySide6 standalone GUI app. Key modules:
   - `main_window.py` — app shell: playback/playhead sync, note editing, analysis/preview orchestration.
   - `state.py` — Qt-free models. `GuiHeatmap.activation_matrix()` lazily caches a numpy `(frame, note)` matrix for the paint path (pure-Python fallback when numpy is absent).
@@ -34,9 +33,6 @@ Main commands:
 notegrabber analyze input.wav --out output.mid
 notegrabber analyze input.wav --out output.mid --heatmap heatmap.json --backend cqt
 notegrabber analyze input.wav --out output.mid --heatmap heatmap.json --backend basic-pitch
-notegrabber visualize input.wav --out-dir viewer-dir
-notegrabber visualize input.wav --out-dir viewer-dir --backend basic-pitch --onset-threshold 0.5 --frame-threshold 0.3 --min-duration 0.05
-notegrabber serve --out-dir out/server
 notegrabber separate input.mp3 --out-dir stems/ --stems bass,vocals
 notegrabber gui
 notegrabber-gui
@@ -48,19 +44,9 @@ Backends:
 - `cqt` — librosa Constant-Q Transform backend for more music-aligned heatmaps and baseline MIDI extraction.
 - `basic-pitch` — Spotify Basic Pitch/ONNX backend for stronger ML note transcription and probability heatmaps. Defaults match NeuralNote's Basic Pitch usage (onset 0.3, frame 0.5, 11-frame / 127.7 ms minimum note length). `analyze_basic_pitch` calls `run_inference` + `model_output_to_notes` directly (not `predict()`), so `infer_onsets` and the frequency bounds are exposed, tunable parameters.
 
-The visualization command defaults to Basic Pitch and writes:
+The native GUI is launched with `notegrabber-gui` or `notegrabber gui`. It implements standalone GUI milestones 0–4 in basic form: open an audio file, load waveform previews and low-resolution full-song pitch overviews in background workers, analyze full audio or a selected time range in a background worker, show heatmap/MIDI rectangles, show a grouped sequence table, retune CQT thresholds in memory, compare original vs rendered MIDI playback, edit/delete selected notes, and export current notes to MIDI. Clicking the waveform, piano roll, or sequence rows seeks both players and updates the playhead. Clicking a note rectangle selects/highlights it; hovered/selected notes show resize handles and cursor feedback; the inspector edits start, duration, pitch, and velocity; dragging a note body moves time/pitch; dragging note edges resizes boundaries; Delete/Backspace or the delete button removes it from the tuned note list used for export. Inspector edits, deletes, CQT retunes, and committed piano-roll drags re-render the MIDI WAV preview when rendering is enabled, so playback reflects edited notes. The primary Open/Analyze/Delete/Export buttons sit in a horizontal action bar above the waveform (not the left panel). A "Notes only (hide heatmap)" checkbox hides the heatmap so only extracted notes show. An always-visible stats strip under the waveform shows note count, duration, estimated tempo (BPM), and detected key (scoped to a selected range when one is active), refreshed on every note edit. Committed edits support undo/redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z). Keyboard nudging is still future work.
 
-- `index.html`
-- `heatmap.json`
-- `analysis.mid`
-- rendered `analysis.wav` via TiMidity++ when available
-- a copy of the original audio
-
-The browser viewer overlays extracted MIDI rectangles on the heatmap and supports hover/click note inspection, show/hide overlay, horizontal zoom, fit-to-width, and live threshold/min-duration re-extraction from the loaded heatmap. It also includes a **Detected sequence** panel with a whole-phrase piano-roll overview/minimap, onset-grouped note/chord table, clickable rows/blocks that jump playback, and CSV copy for the currently visible/tuned sequence. The original-audio panel includes a browser file picker and waveform/signal canvas; in static viewers, selected files update playback and waveform preview only, while analysis/heatmap data still comes from the generated viewer artifacts. To select a file and generate new MIDI/heatmap/notes from the browser, use `notegrabber serve` and upload through the local web app. For very large files, the viewer compresses the heatmap canvas horizontally to stay within browser canvas limits; generated HTML/JSON can still be large.
-
-The native GUI is launched with `notegrabber-gui` or `notegrabber gui`. It implements standalone GUI milestones 0–4 in basic form: open an audio file, load waveform previews and low-resolution full-song pitch overviews in background workers, analyze full audio or a selected time range in a background worker, show heatmap/MIDI rectangles, show a grouped sequence table, retune CQT thresholds in memory, compare original vs rendered MIDI playback, edit/delete selected notes, and export current notes to MIDI. Clicking the waveform, piano roll, or sequence rows seeks both players and updates the playhead. Clicking a note rectangle selects/highlights it; hovered/selected notes show resize handles and cursor feedback; the inspector edits start, duration, pitch, and velocity; dragging a note body moves time/pitch; dragging note edges resizes boundaries; Delete/Backspace or the delete button removes it from the tuned note list used for export. Inspector edits, deletes, CQT retunes, and committed piano-roll drags re-render the MIDI WAV preview when rendering is enabled, so playback reflects edited notes. The primary Open/Analyze/Delete/Export buttons sit in a horizontal action bar above the waveform (not the left panel). A "Notes only (hide heatmap)" checkbox hides the heatmap so only extracted notes show. An always-visible stats strip under the waveform shows note count, duration, estimated tempo (BPM), and detected key, refreshed on every note edit. Editing polish such as undo/redo and keyboard nudging is still future work.
-
-Tuning flags available on both `analyze` and `visualize`:
+Tuning flags available on `analyze`:
 
 - `--threshold` — CQT heatmap-to-note activation threshold.
 - `--onset-threshold` — Basic Pitch onset threshold.
@@ -82,7 +68,7 @@ Run tests:
 NOTEGRABBER_BIN=notegrabber python3 -m pytest -q
 ```
 
-Current expected result: **123 passed** when optional ML and PySide6 GUI dependencies are installed. (Stem-separation tests mock `demucs_onnx`, so they run without downloading the model.)
+Current expected result: **126 passed** when optional ML and PySide6 GUI dependencies are installed. (Stem-separation tests mock `demucs_onnx`, so they run without downloading the model.)
 
 Quick GUI manual check:
 
@@ -106,7 +92,7 @@ python3 -m pytest -m gui
 
 ## Local sample
 
-`oxi.wav` is a local real-audio sample used for manual testing. Generated outputs are under `out/`, especially `out/oxi-viewer/index.html`. The viewer has most recently been generated with the default Basic Pitch backend.
+`oxi.wav` is a local real-audio sample used for manual testing (e.g. `notegrabber-gui oxi.wav`, or `notegrabber separate oxi.wav --out-dir stems/`). Generated outputs go under `out/`.
 
 These are working artifacts, not core source code.
 
@@ -119,7 +105,6 @@ These are working artifacts, not core source code.
 - Do not commit generated caches: `.pytest_cache/`, `__pycache__/`, etc.
 - Treat `.pi-subagents/` as agent/runtime artifacts, not project source.
 - CQT extraction is still heuristic. Basic Pitch is currently the best default backend for real samples.
-- If editing `visualizer.py`, regenerate `out/oxi-viewer/index.html` for manual checks and run a JavaScript syntax check on the extracted script when possible (for example with `node --check`) because the viewer is generated as an embedded script string.
 - If editing `src/notegrabber/gui/`, run `python3 -m compileall -q src tests` and `NOTEGRABBER_BIN=notegrabber python3 -m pytest -q`; when PySide6 is installed, offscreen GUI smoke tests should run.
 
 ## Recommended next steps
@@ -131,6 +116,6 @@ User priorities for the next work are **UI polish, speed/responsiveness, playbac
 3. **Speed/responsiveness**: playhead updates repaint only narrow regions; the heatmap paint is vectorized via a cached numpy activation matrix (issue #1); per-drag note repaint is partial (issue #3); the MIDI-preview render runs off-thread with debounce/supersede (issue #4); and the waveform paint (issue #5) and overview build (issue #6) are now numpy-vectorized too. Remaining: progress detail, cancel analysis/overview jobs, and optional overview/heatmap level-of-detail caching.
 4. **UI polish**: heatmap view height is now capped relative to the window so vertical pitch zoom does not hide the inspector/sequence area, and the left-panel action buttons are placed above reserved/stub controls so Open/Analyze/Delete/Export remain visible. Continue refining the ToneTrace dark pro-DAW layout, especially control density, selected-region affordances, selected-note editing affordances, and visual hierarchy between overview waveform, detail heatmap, and sequence table.
 5. **Editing workflow polish**: add keyboard nudging, undo/redo, and optional ghost previews during drag.
-6. **Output/workflow polish**: add native CSV/minimap parity where useful, project/session save-load, and maybe export browser-tuned notes if the browser workflow remains relevant.
+6. **Output/workflow polish**: add native CSV/minimap parity where useful and project/session save-load.
 7. **Analysis comparison and quality**: add explicit compare mode for CQT vs Basic Pitch outputs and tolerant regression fixtures/metrics for real samples if legally/shareably possible.
 8. Later, move toward plugin implementation using JUCE/DPF/iPlug2/NIH-plug.

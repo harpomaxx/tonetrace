@@ -10,7 +10,7 @@ from typing import Any
 
 from notegrabber.analyzer import BackendName, analyze_wav_to_midi
 from notegrabber.midi import MidiNote, TICKS_PER_SECOND, write_midi
-from notegrabber.visualizer import render_midi_to_wav
+from notegrabber.midi_render import render_midi_to_wav
 
 from .state import GuiHeatmap, GuiMidiNote, heatmap_from_document, midi_notes_to_gui
 

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from notegrabber.midi import write_midi
-from notegrabber.visualizer import render_midi_to_wav
+from notegrabber.midi_render import render_midi_to_wav
 
 from .state import GuiMidiNote, gui_notes_to_midi
 

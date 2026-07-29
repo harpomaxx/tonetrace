@@ -7,9 +7,9 @@ heatmap, extracts candidate MIDI notes, and lets you compare the original audio
 against the generated MIDI — then edit and export the result.
 
 > ⚠️ **Work in progress.** This is an early Linux/free-software spike inspired by
-> noteGRABBER-style workflows. It currently ships a CLI, a local browser viewer,
-> a local upload server, and a native standalone GUI. There is **no VST / LV2 /
-> CLAP plugin yet** — that is future work. Expect rough edges.
+> noteGRABBER-style workflows. It currently ships a CLI and a native standalone
+> GUI. There is **no VST / LV2 / CLAP plugin yet** — that is future work. Expect
+> rough edges.
 >
 > The Python package and CLI are still named `notegrabber`; **ToneTrace** is the
 > product name of the native GUI.
@@ -155,12 +155,6 @@ section (handy for long files), pick a backend, and click **Analyze**. Then:
 # Analyze to a MIDI file (+ optional heatmap JSON):
 notegrabber analyze input.wav --out output.mid
 notegrabber analyze input.wav --out output.mid --heatmap heatmap.json --backend basic-pitch
-
-# Generate a self-contained browser viewer:
-notegrabber visualize input.wav --out-dir viewer-dir
-
-# Run a local upload/re-analysis web app:
-notegrabber serve --out-dir out/server
 ```
 
 ### Stem separation
@@ -190,7 +184,7 @@ estimate from the audio length — it over-predicts on a GPU. Pass `--quiet` to
 suppress the progress display. A GPU (`pip install onnxruntime-gpu`) makes it
 dramatically faster.
 
-Common tuning flags on `analyze` / `visualize`:
+Common tuning flags on `analyze`:
 
 - `--threshold` — CQT heatmap-to-note activation threshold
 - `--onset-threshold` / `--frame-threshold` — Basic Pitch thresholds
@@ -213,14 +207,14 @@ performance backlog.
 
 ## Status & roadmap
 
-Implemented: CLI transcription, browser viewer, local server, and a native
-PySide6 GUI with background analysis, waveform/heatmap views, playback
-comparison, note editing, MIDI export, and a transcription stats strip
-(note count, duration, estimated tempo, and detected key/scale).
+Implemented: CLI transcription, CLI stem separation, and a native PySide6 GUI
+with background analysis, waveform/heatmap views, playback comparison, note
+editing with undo/redo, MIDI export, and a transcription stats strip (note
+count, duration, estimated tempo, and detected key/scale).
 
-Not yet: VST/LV2/CLAP plugin formats, project save/load, and undo/redo. The
-near-term focus is UI polish, speed/responsiveness, and playback/zoom
-refinement.
+Not yet: VST/LV2/CLAP plugin formats and project save/load. The near-term focus
+is UI polish, speed/responsiveness, and playback/zoom refinement. (An earlier
+browser viewer / upload server has been removed in favor of the native GUI.)
 
 ## License
 

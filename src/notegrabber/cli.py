@@ -20,8 +20,6 @@ from .separator import (
     read_audio_duration,
     separate_stems,
 )
-from .server import serve_upload_app
-from .visualizer import create_visualization
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,40 +44,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_analysis_tuning_arguments(analyze_parser)
     analyze_parser.set_defaults(handler=_handle_analyze)
-
-    visualize_parser = subparsers.add_parser(
-        "visualize",
-        help="create a browser heatmap viewer and optional rendered MIDI audio",
-        description="Analyze an input audio WAV file with the Basic Pitch backend by default and write a local HTML viewer.",
-    )
-    visualize_parser.add_argument("input_audio", type=Path, help="input audio WAV file")
-    visualize_parser.add_argument("--out-dir", required=True, type=Path, help="output directory for index.html and generated assets")
-    visualize_parser.add_argument(
-        "--backend",
-        choices=("simple", "cqt", "basic-pitch"),
-        default="basic-pitch",
-        help="analysis backend to visualize: simple deterministic DSP, CQT/librosa, or Spotify Basic Pitch ML (default: basic-pitch)",
-    )
-    add_analysis_tuning_arguments(visualize_parser)
-    visualize_parser.add_argument("--no-render-midi", action="store_true", help="do not invoke TiMidity++ to render MIDI to WAV")
-    visualize_parser.set_defaults(handler=_handle_visualize)
-
-    serve_parser = subparsers.add_parser(
-        "serve",
-        help="run a local upload web app that generates fresh viewers",
-        description="Run a local-only HTTP server where selecting an audio file runs notegrabber analysis and opens a fresh viewer.",
-    )
-    serve_parser.add_argument("--host", default="127.0.0.1", help="host/interface to bind (default: 127.0.0.1)")
-    serve_parser.add_argument("--port", type=int, default=8765, help="port to bind (default: 8765)")
-    serve_parser.add_argument("--out-dir", type=Path, default=Path("out/server"), help="directory for uploaded files and generated viewers")
-    serve_parser.add_argument(
-        "--backend",
-        choices=("simple", "cqt", "basic-pitch"),
-        default="basic-pitch",
-        help="default backend selected in the upload form (default: basic-pitch)",
-    )
-    serve_parser.add_argument("--no-render-midi", action="store_true", help="do not render MIDI previews with TiMidity++ for uploaded analyses")
-    serve_parser.set_defaults(handler=_handle_serve)
 
     gui_parser = subparsers.add_parser(
         "gui",
@@ -134,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def add_analysis_tuning_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add backend tuning flags shared by analyze and visualize."""
+    """Add backend tuning flags for the analyze command."""
 
     parser.add_argument(
         "--threshold",
@@ -314,23 +278,6 @@ def _handle_separate(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_serve(args: argparse.Namespace) -> int:
-    try:
-        serve_upload_app(
-            host=args.host,
-            port=args.port,
-            out_dir=args.out_dir,
-            default_backend=args.backend,
-            render_midi=not args.no_render_midi,
-        )
-    except KeyboardInterrupt:
-        print("notegrabber: upload server stopped")
-    except Exception as exc:
-        print(f"notegrabber: serve failed: {exc}", file=sys.stderr)
-        return 1
-    return 0
-
-
 def _handle_gui(args: argparse.Namespace) -> int:
     try:
         from .gui.app import run_gui
@@ -338,39 +285,6 @@ def _handle_gui(args: argparse.Namespace) -> int:
         print(f"notegrabber: GUI startup failed: {exc}", file=sys.stderr)
         return 1
     return run_gui(audio=args.audio, backend=args.backend, render_midi=not args.no_render_midi)
-
-
-def _handle_visualize(args: argparse.Namespace) -> int:
-    input_audio: Path = args.input_audio
-    out_dir: Path = args.out_dir
-    backend: str = args.backend
-
-    if not input_audio.exists():
-        print(f"notegrabber: input audio not found: {input_audio}", file=sys.stderr)
-        return 2
-    if not input_audio.is_file():
-        print(f"notegrabber: input audio is not a file: {input_audio}", file=sys.stderr)
-        return 2
-
-    try:
-        outputs = create_visualization(
-            input_audio,
-            out_dir,
-            backend=backend,
-            render_midi=not args.no_render_midi,
-            threshold=args.threshold,
-            onset_threshold=args.onset_threshold,
-            frame_threshold=args.frame_threshold,
-            min_duration_seconds=args.min_duration,
-        )
-    except Exception as exc:
-        print(f"notegrabber: visualize failed: {exc}", file=sys.stderr)
-        return 1
-
-    print(f"wrote visualization {outputs['html']}")
-    if outputs.get("midi_audio") is None and not args.no_render_midi:
-        print("notegrabber: MIDI WAV preview was not rendered; install/configure TiMidity++ for browser playback", file=sys.stderr)
-    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

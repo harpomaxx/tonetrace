@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "notegrabber"
 version = "0.1.0"
-description = "ToneTrace: audio-to-MIDI transcription with a CLI, browser viewer, and native GUI"
+description = "ToneTrace: audio-to-MIDI transcription and stem separation with a CLI and a native GUI"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
