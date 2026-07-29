@@ -48,11 +48,36 @@ duration) are exposed on both the CLI and the GUI.
 - Optional: **TiMidity++** on your `PATH` for rendering MIDI audio previews
   (`sudo apt install timidity` on Debian/Ubuntu)
 
+## Quick start
+
+Install the desktop app straight from GitHub and launch it — no source checkout
+needed:
+
+```bash
+python3 -m venv ~/.venvs/tonetrace && source ~/.venvs/tonetrace/bin/activate
+pip install 'notegrabber[gui] @ git+https://github.com/harpomaxx/tonetrace.git'
+notegrabber-gui                       # opens the app; File → open an audio file
+```
+
+Prefer the command line? Transcribe a file to MIDI in one step:
+
+```bash
+notegrabber analyze song.wav --out song.mid --backend basic-pitch
+```
+
+Want per-instrument stems too? Add the `separate` extra (see
+[Stem separation](#stem-separation)):
+
+```bash
+pip install 'notegrabber[gui,separate] @ git+https://github.com/harpomaxx/tonetrace.git'
+```
+
 ## Installation
 
 Using a virtual environment is recommended. **For the desktop app, `.[gui]` is
 the extra to use** — it is a complete, ready-to-run GUI (audio decoding,
-overview, and all backends included).
+overview, and all backends included). Add `,separate` (e.g. `.[gui,separate]`)
+if you also want stem separation.
 
 ### Install from anywhere (no source checkout needed)
 
@@ -87,7 +112,9 @@ pip install -e '.[gui]'
 
 ### Choosing extras
 
-Any of the install commands above accepts a narrower extra in place of `gui`:
+Any install command above accepts a narrower extra in place of `gui`, and extras
+can be combined by comma — e.g. `.[gui,separate]` or
+`'notegrabber[cqt,separate] @ git+…'`:
 
 ```
 [gui]           # complete desktop app (GUI + audio decode + all backends)
@@ -95,7 +122,7 @@ Any of the install commands above accepts a narrower extra in place of `gui`:
 [ml]            # CQT + Basic Pitch backends, no GUI
 [basic-pitch]   # Basic Pitch backend only
 [cqt]           # CQT backend only (librosa + numpy + soundfile)
-[separate]      # stem separation (HT-Demucs ONNX, no PyTorch) — combine with others
+[separate]      # stem separation (HT-Demucs ONNX, no PyTorch); combine with any above
 (no extra)      # base package (simple backend, PCM WAV only)
 ```
 
