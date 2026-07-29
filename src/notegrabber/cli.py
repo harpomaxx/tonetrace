@@ -188,6 +188,61 @@ def _handle_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
+# Small emoji icons per stem, purely for a friendlier separation summary.
+_STEM_ICONS = {
+    "vocals": "🎤",
+    "drums": "🥁",
+    "bass": "🎸",
+    "guitar": "🎸",
+    "piano": "🎹",
+    "other": "🎶",
+}
+
+
+def _run_with_spinner(work, *, label: str, stream) -> object:
+    """Run ``work()`` on a thread while animating a spinner + elapsed timer.
+
+    Returns the work's result, or re-raises its exception. Falls back to a single
+    static line when the stream is not an interactive TTY (e.g. piped to a file).
+    """
+
+    import threading
+    import time
+
+    box: dict = {}
+
+    def runner() -> None:
+        try:
+            box["result"] = work()
+        except BaseException as exc:  # capture to re-raise on the main thread
+            box["error"] = exc
+
+    thread = threading.Thread(target=runner, daemon=True)
+    is_tty = hasattr(stream, "isatty") and stream.isatty()
+
+    start = time.monotonic()
+    if not is_tty:
+        # No animation when piped/redirected; the caller's header already says
+        # what is running, so just wait quietly.
+        thread.start()
+        thread.join()
+    else:
+        frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        thread.start()
+        i = 0
+        while thread.is_alive():
+            elapsed = time.monotonic() - start
+            print(f"\r  {frames[i % len(frames)]}  {label}   {elapsed:5.1f}s", end="", file=stream, flush=True)
+            i += 1
+            thread.join(timeout=0.1)
+        # Clear the spinner line.
+        print("\r" + " " * (len(label) + 24) + "\r", end="", file=stream, flush=True)
+
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
+
+
 def _handle_separate(args: argparse.Namespace) -> int:
     input_audio: Path = args.input_audio
     if not input_audio.exists():
@@ -198,24 +253,40 @@ def _handle_separate(args: argparse.Namespace) -> int:
         return 2
 
     stems = [s.strip() for s in args.stems.split(",") if s.strip()] if args.stems else None
-    if not args.quiet:
-        print(f"separating {input_audio.name} with {args.model} (this is roughly real-time on CPU)…", file=sys.stderr)
-    try:
-        result = separate_stems(
+    import time as _time
+
+    def _work():
+        # Keep the library quiet; we render our own progress.
+        return separate_stems(
             input_audio,
             args.out_dir,
             model=args.model,
             stems=stems,
             precision=args.precision,
-            verbose=not args.quiet,
+            verbose=False,
         )
+
+    started = _time.monotonic()
+    try:
+        if args.quiet:
+            result = _work()
+        else:
+            print(f"\n  Separating {input_audio.name}  ·  {args.model}  ·  ~real-time on CPU", file=sys.stderr)
+            result = _run_with_spinner(_work, label=f"separating {input_audio.name}", stream=sys.stderr)
     except Exception as exc:  # argparse-style CLI: report failure without a traceback.
         print(f"notegrabber: separate failed: {exc}", file=sys.stderr)
         return 1
 
-    print(f"wrote {len(result.stem_paths)} stem(s) to {result.output_dir}:")
-    for name, path in result.stem_paths.items():
-        print(f"  {name}: {path}")
+    elapsed = _time.monotonic() - started
+    count = len(result.stem_paths)
+    if not args.quiet:
+        print(f"  ✓ Done in {elapsed:.1f}s  ·  {count} stem{'s' if count != 1 else ''}  →  {result.output_dir}", file=sys.stderr)
+        for name, path in result.stem_paths.items():
+            print(f"      {_STEM_ICONS.get(name, '·')}  {name:<7} {path.name}", file=sys.stderr)
+        print("", file=sys.stderr)
+    # Machine-readable result on stdout (one path per line) for scripting.
+    for path in result.stem_paths.values():
+        print(path)
     return 0
 
 

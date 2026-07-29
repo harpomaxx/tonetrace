@@ -117,3 +117,24 @@ def test_separate_stems_missing_dependency(monkeypatch, tmp_path) -> None:
     audio.write_bytes(b"RIFFfake")
     with pytest.raises(RuntimeError, match=r"\.\[separate\]"):
         separate_stems(audio, tmp_path / "stems")
+
+
+def test_run_with_spinner_returns_result_non_tty() -> None:
+    import io
+    from notegrabber.cli import _run_with_spinner
+
+    # A plain StringIO is not a TTY, so no animation is attempted.
+    out = io.StringIO()
+    result = _run_with_spinner(lambda: 42, label="working", stream=out)
+    assert result == 42
+
+
+def test_run_with_spinner_propagates_errors() -> None:
+    import io
+    from notegrabber.cli import _run_with_spinner
+
+    def boom():
+        raise ValueError("kaboom")
+
+    with pytest.raises(ValueError, match="kaboom"):
+        _run_with_spinner(boom, label="working", stream=io.StringIO())
