@@ -1528,3 +1528,43 @@ def test_uncommitted_drag_is_one_undo_step_offscreen() -> None:
 
     window.close()
     app.processEvents()
+
+
+@pytest.mark.gui
+def test_stats_strip_scopes_to_selection_offscreen() -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.main_window import MainWindow
+    from notegrabber.gui.state import GuiHeatmap, GuiMidiNote
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+    window.state.heatmap = GuiHeatmap(
+        backend="basic-pitch",
+        midi_notes=[60, 61, 62, 63, 64],
+        frame_times=[0.0, 0.1],
+        activations=[[0.9, 0.8, 0.7, 0.6, 0.5], [0.7, 0.6, 0.5, 0.4, 0.3]],
+        sample_rate=10,
+        hop_size=1,
+        window_size=1,
+    )
+    window.waveform.set_preview([0.0, 0.1], sample_rate=1, duration_seconds=20.0)
+    notes = [
+        GuiMidiNote(pitch=60, start_seconds=0.0, duration_seconds=0.5, velocity=90),
+        GuiMidiNote(pitch=62, start_seconds=10.0, duration_seconds=0.5, velocity=90),
+    ]
+    window.state.extracted_notes = notes
+    window._set_display_notes(notes)
+    # Whole-song stats: both notes, no "Selection:" prefix.
+    assert "Notes 2" in window.stats_label.text()
+    assert not window.stats_label.text().startswith("Selection:")
+
+    # Select a range covering only the first note.
+    window._set_analysis_range_from_waveform(0.0, 5.0)
+    assert window.stats_label.text().startswith("Selection:")
+    assert "Notes 1" in window.stats_label.text()
+
+    window.close()
+    app.processEvents()

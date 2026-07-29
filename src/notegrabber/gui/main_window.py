@@ -241,7 +241,7 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self.waveform)
         self.stats_label = QLabel("Notes 0  ·  0:00  ·  — BPM  ·  —")
         self.stats_label.setObjectName("statsStrip")
-        self.stats_label.setToolTip("Transcription summary: note count · duration · estimated tempo · detected key. Updates after Analyze and edits.")
+        self.stats_label.setToolTip("Transcription summary: note count · duration · estimated tempo · detected key. Drag a range on the waveform to scope it to that slice (shown as 'Selection:'). Updates after Analyze and edits.")
         top_layout.addWidget(self.stats_label)
 
         self.piano_scroll = QScrollArea()
@@ -529,9 +529,24 @@ class MainWindow(QMainWindow):
         self._update_stats(notes)
 
     def _update_stats(self, notes: list[GuiMidiNote]) -> None:
-        """Compute and display the transcription stats strip."""
+        """Compute and display the transcription stats strip.
 
-        stats = compute_stats(notes, duration_seconds=self.waveform.duration_seconds())
+        When a waveform range is selected, the strip describes that slice
+        (labelled "Selection:"); otherwise it covers the whole transcription.
+        """
+
+        start = self.waveform.selection_start_seconds
+        length = self.waveform.selection_duration_seconds
+        if start is not None and length is not None and length > 0:
+            stats = compute_stats(
+                notes,
+                duration_seconds=length,
+                start_seconds=start,
+                end_seconds=start + length,
+                is_selection=True,
+            )
+        else:
+            stats = compute_stats(notes, duration_seconds=self.waveform.duration_seconds())
         self.stats_label.setText(stats.strip_text())
 
     def _select_note(self, index: int | None, _seek_seconds: float | None = None) -> None:
@@ -813,6 +828,8 @@ class MainWindow(QMainWindow):
         self.controls.set_analysis_range(start_seconds, duration_seconds)
         self.waveform.set_selection(start_seconds, duration_seconds)
         self._seek_seconds(start_seconds)
+        # Refresh the stats strip to describe the newly selected slice.
+        self._update_stats(self.state.current_notes)
         self._set_status(f"Selected range {start_seconds:.2f}s–{start_seconds + duration_seconds:.2f}s ({duration_seconds:.2f}s). Click Analyze.")
 
     def _seek_seconds(self, seconds: float) -> None:

@@ -79,3 +79,49 @@ def test_strip_text_handles_empty() -> None:
     assert "0:00" in text
     assert "— BPM" in text
     assert "—" in text  # key uncertain / none
+
+
+def test_selection_scopes_note_count_and_labels_strip() -> None:
+    notes = [
+        _note(60, start=0.0),
+        _note(62, start=1.0),
+        _note(64, start=5.0),   # inside the [4, 8] window
+        _note(65, start=6.0),   # inside
+        _note(67, start=10.0),  # outside
+    ]
+    whole = compute_stats(notes, duration_seconds=12.0)
+    assert whole.note_count == 5
+    assert not whole.is_selection
+    assert not whole.strip_text().startswith("Selection:")
+
+    sliced = compute_stats(
+        notes, duration_seconds=4.0, start_seconds=4.0, end_seconds=8.0, is_selection=True
+    )
+    assert sliced.note_count == 2  # only the two notes in [4, 8]
+    assert sliced.is_selection
+    assert sliced.strip_text().startswith("Selection:")
+    assert "0:04" in sliced.strip_text()  # window length, not whole-song duration
+
+
+def test_selection_tempo_uses_only_windowed_notes() -> None:
+    # 120 BPM (0.5s spacing) inside the window; a couple of far-away notes outside.
+    windowed = [_note(60 + (i % 3), start=10.0 + i * 0.5) for i in range(16)]
+    outliers = [_note(60, start=0.0), _note(60, start=1.0)]
+    stats = compute_stats(
+        windowed + outliers,
+        duration_seconds=8.0,
+        start_seconds=10.0,
+        end_seconds=18.0,
+        is_selection=True,
+    )
+    assert stats.tempo_bpm is not None
+    assert stats.tempo_bpm == pytest.approx(120, abs=2.0)
+
+
+def test_note_straddling_selection_boundary_is_included() -> None:
+    # A note starting before the window but overlapping into it counts.
+    note = _note(60, start=3.0, duration=3.0)  # spans 3.0-6.0
+    stats = compute_stats(
+        [note], duration_seconds=3.0, start_seconds=5.0, end_seconds=8.0, is_selection=True
+    )
+    assert stats.note_count == 1

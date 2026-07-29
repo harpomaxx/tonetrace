@@ -43,6 +43,9 @@ class TranscriptionStats:
     duration_seconds: float
     tempo_bpm: float | None
     key: KeyEstimate
+    # True when these stats describe a selected time range rather than the whole
+    # transcription, so the strip can label it.
+    is_selection: bool = False
 
     def _format_duration(self) -> str:
         total = max(0, int(round(self.duration_seconds)))
@@ -58,8 +61,9 @@ class TranscriptionStats:
     def strip_text(self) -> str:
         """A terse one-line summary for an always-visible stats strip."""
 
+        prefix = "Selection: " if self.is_selection else ""
         return (
-            f"Notes {self.note_count}"
+            f"{prefix}Notes {self.note_count}"
             f"  ·  {self._format_duration()}"
             f"  ·  {self._format_tempo()}"
             f"  ·  {self._format_key()}"
@@ -113,16 +117,52 @@ def estimate_tempo_bpm(notes: Iterable[object]) -> float | None:
     return _fold_into_tempo_range(60.0 / beat_period)
 
 
+def _notes_in_window(
+    notes: Iterable[object],
+    start_seconds: float,
+    end_seconds: float | None,
+) -> list[object]:
+    """Return notes that overlap the ``[start, end]`` window (end None = to the end)."""
+
+    kept: list[object] = []
+    for note in notes:
+        note_start = float(getattr(note, "start_seconds"))
+        note_end = note_start + float(getattr(note, "duration_seconds"))
+        if note_end <= start_seconds:
+            continue
+        if end_seconds is not None and note_start >= end_seconds:
+            continue
+        kept.append(note)
+    return kept
+
+
 def compute_stats(
     notes: Sequence[object],
     *,
     duration_seconds: float,
+    start_seconds: float = 0.0,
+    end_seconds: float | None = None,
+    is_selection: bool = False,
 ) -> TranscriptionStats:
-    """Compute the full stats bundle for the current note list."""
+    """Compute the stats bundle, optionally scoped to a selected time range.
+
+    When ``is_selection`` is set (with ``start_seconds``/``end_seconds``), notes
+    are restricted to that window for the count, tempo, and key, and
+    ``duration_seconds`` should be the window length. Otherwise stats cover the
+    whole note list.
+    """
+
+    if is_selection:
+        scoped = _notes_in_window(notes, start_seconds, end_seconds)
+        key = detect_key_from_notes(scoped, start_seconds=start_seconds, end_seconds=end_seconds)
+    else:
+        scoped = list(notes)
+        key = detect_key_from_notes(scoped)
 
     return TranscriptionStats(
-        note_count=len(notes),
+        note_count=len(scoped),
         duration_seconds=max(0.0, float(duration_seconds)),
-        tempo_bpm=estimate_tempo_bpm(notes),
-        key=detect_key_from_notes(notes),
+        tempo_bpm=estimate_tempo_bpm(scoped),
+        key=key,
+        is_selection=is_selection,
     )
