@@ -154,7 +154,10 @@ notegrabber analyze stems/song/bass.wav --out bass.mid --backend basic-pitch
 ```
 
 `--model htdemucs_6s` adds `guitar` and `piano` stems (heavier; the piano stem is
-weaker). Separation is high quality but not fast — expect roughly real-time on CPU.
+weaker). Separation is high quality but not fast — expect roughly real-time on
+CPU, so a 4-minute song takes a few minutes. A **chunk-by-chunk progress display**
+(on stderr) shows how far along it is; pass `--quiet` to hide it. A GPU
+(`pip install onnxruntime-gpu`) makes it dramatically faster.
 
 Common tuning flags on `analyze` / `visualize`:
 

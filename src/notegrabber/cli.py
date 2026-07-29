@@ -117,6 +117,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="fp16",
         help="model weight precision; fp16 is smaller/faster to download (default: fp16)",
     )
+    separate_parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="hide the chunk-by-chunk progress display (shown by default; separation is roughly real-time on CPU)",
+    )
     separate_parser.set_defaults(handler=_handle_separate)
 
     return parser
@@ -193,6 +198,8 @@ def _handle_separate(args: argparse.Namespace) -> int:
         return 2
 
     stems = [s.strip() for s in args.stems.split(",") if s.strip()] if args.stems else None
+    if not args.quiet:
+        print(f"separating {input_audio.name} with {args.model} (this is roughly real-time on CPU)…", file=sys.stderr)
     try:
         result = separate_stems(
             input_audio,
@@ -200,6 +207,7 @@ def _handle_separate(args: argparse.Namespace) -> int:
             model=args.model,
             stems=stems,
             precision=args.precision,
+            verbose=not args.quiet,
         )
     except Exception as exc:  # argparse-style CLI: report failure without a traceback.
         print(f"notegrabber: separate failed: {exc}", file=sys.stderr)

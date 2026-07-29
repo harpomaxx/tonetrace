@@ -89,8 +89,10 @@ def test_separate_help_documents_stem_options() -> None:
     assert "--out-dir" in combined_output
     assert "--model" in combined_output
     assert "--stems" in combined_output
+    assert "--quiet" in combined_output
     assert "htdemucs" in combined_output
     assert any(term in combined_output for term in ("stem", "separate", "vocals"))
+    assert any(term in combined_output for term in ("progress", "real-time"))
 
 
 @pytest.mark.cli

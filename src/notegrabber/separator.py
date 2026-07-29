@@ -12,6 +12,8 @@ guitar/piano variant) can be added without changing the CLI contract.
 
 from __future__ import annotations
 
+import contextlib
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -53,12 +55,15 @@ def separate_stems(
     model: str = DEFAULT_SEPARATION_MODEL,
     stems: Sequence[str] | None = None,
     precision: PrecisionName = "fp16",
+    verbose: bool = False,
 ) -> SeparationResult:
     """Separate ``input_audio`` into stems written under ``output_dir``.
 
     ``stems`` optionally restricts the output to a subset (e.g. ``["vocals"]``);
     ``None`` writes every stem the model produces. ``precision`` chooses fp16
-    (smaller/faster download) or fp32 weights.
+    (smaller/faster download) or fp32 weights. ``verbose`` shows chunk-by-chunk
+    progress on stderr so the user can gauge how long a long file will take
+    (separation is roughly real-time on CPU).
     """
 
     try:
@@ -81,15 +86,20 @@ def separate_stems(
         raise FileNotFoundError(f"input audio not found: {input_audio}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    demucs_onnx.separate(
-        str(input_audio),
-        str(output_dir),
-        model=model,
-        stems=list(stems) if stems is not None else None,
-        precision=precision,
-        progress=False,
-        output_format="wav",
-    )
+    # demucs-onnx prints its chunk-by-chunk progress to stdout; redirect that to
+    # stderr so progress and the actual result stay on separate streams (stdout
+    # remains clean for scripting the stem paths).
+    with contextlib.redirect_stdout(sys.stderr):
+        demucs_onnx.separate(
+            str(input_audio),
+            str(output_dir),
+            model=model,
+            stems=list(stems) if stems is not None else None,
+            precision=precision,
+            verbose=verbose,
+            progress=verbose,
+            output_format="wav",
+        )
 
     wanted = tuple(stems) if stems is not None else produced
     stem_paths = {name: output_dir / f"{name}.wav" for name in wanted}

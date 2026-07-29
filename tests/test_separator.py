@@ -38,10 +38,11 @@ def _install_fake_demucs_onnx(monkeypatch, recorder: dict) -> None:
 
     fake = types.ModuleType("demucs_onnx")
 
-    def separate(input_path, output_dir, *, model, stems, precision, progress, output_format):
+    def separate(input_path, output_dir, *, model, stems, precision, verbose, progress, output_format):
         recorder["call"] = dict(
             input=input_path, output_dir=output_dir, model=model,
-            stems=stems, precision=precision, output_format=output_format,
+            stems=stems, precision=precision, verbose=verbose, progress=progress,
+            output_format=output_format,
         )
         names = stems if stems is not None else list(SEPARATION_MODELS[model])
         for name in names:
@@ -66,6 +67,20 @@ def test_separate_stems_writes_all_stems(monkeypatch, tmp_path) -> None:
         assert path.exists()
     assert recorder["call"]["model"] == "htdemucs"
     assert recorder["call"]["precision"] == "fp16"
+    # Progress feedback is off unless requested.
+    assert recorder["call"]["verbose"] is False
+
+
+def test_separate_stems_verbose_is_threaded_through(monkeypatch, tmp_path) -> None:
+    recorder: dict = {}
+    _install_fake_demucs_onnx(monkeypatch, recorder)
+    audio = tmp_path / "song.wav"
+    audio.write_bytes(b"RIFFfake")
+
+    separate_stems(audio, tmp_path / "stems", verbose=True)
+
+    assert recorder["call"]["verbose"] is True
+    assert recorder["call"]["progress"] is True
 
 
 def test_separate_stems_subset(monkeypatch, tmp_path) -> None:
