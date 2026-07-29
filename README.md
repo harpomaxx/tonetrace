@@ -51,25 +51,27 @@ duration) are exposed on both the CLI and the GUI.
 ## Installation
 
 Clone the repo and install with the extras you need. Using a virtual environment
-is recommended.
+is recommended. **For the desktop app, `.[gui]` is the one to use** — it is a
+complete, ready-to-run GUI (audio decoding, overview, and all backends
+included).
 
 ```bash
 git clone https://github.com/harpomaxx/tonetrace.git
 cd tonetrace
 python3 -m venv .venv && source .venv/bin/activate
 
-# Everything (ML backends + native GUI):
-pip install -e '.[standalone]'
+# Native GUI, ready to open MP3/FLAC/OGG and analyze out of the box:
+pip install -e '.[gui]'
 ```
 
 Or install a narrower set of extras:
 
 ```bash
-pip install -e '.[gui]'          # native GUI only (PySide6 + pyqtgraph)
+pip install -e '.[standalone]'   # everything (same as .[gui]; kept for scripts)
 pip install -e '.[ml]'           # CQT + Basic Pitch backends, no GUI
 pip install -e '.[basic-pitch]'  # Basic Pitch backend only
-pip install -e '.[cqt]'          # CQT backend only
-pip install -e .                 # base package (simple backend only)
+pip install -e '.[cqt]'          # CQT backend only (librosa + numpy + soundfile)
+pip install -e .                 # base package (simple backend, PCM WAV only)
 ```
 
 ## Usage

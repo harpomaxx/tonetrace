@@ -55,7 +55,7 @@ def build_pitch_overview(
         import numpy as np  # type: ignore[import-not-found]
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "Pitch overview requires librosa/numpy; install with `python3 -m pip install -e '.[standalone]'`."
+            "Pitch overview requires librosa/numpy; reinstall the GUI with `python3 -m pip install -e '.[gui]'`."
         ) from exc
 
     audio, actual_sample_rate = librosa.load(audio_path, sr=sample_rate, mono=True)

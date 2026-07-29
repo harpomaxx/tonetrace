@@ -106,13 +106,16 @@ The PySide6 GUI follows the standalone GUI plan in `docs/standalone-gui-plan/` a
 - polished first-pass dark pro-DAW Qt theme with warm red/orange/yellow accents, rounded card panels, compact action pad, SVG button icons, and explanatory slider tooltips
 - export current edited/tuned notes to MIDI
 
-Install GUI dependencies with:
+Install the GUI with:
 
 ```bash
 python3 -m pip install -e '.[gui]'
-# or all standalone dependencies:
-python3 -m pip install -e '.[standalone]'
 ```
+
+`.[gui]` is a complete, ready-to-run desktop app: it bundles PySide6/pyqtgraph
+**and** the audio/ML stack (librosa, numpy, soundfile, Basic Pitch), so it can
+open MP3/FLAC/OGG, build the pitch overview, and analyze out of the box.
+`.[standalone]` resolves to the same set and is kept for scripts/CI.
 
 ## Current limitation / next focus
 

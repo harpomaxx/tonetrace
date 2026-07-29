@@ -206,7 +206,7 @@ def _extract_audio_range(input_audio: Path, output_wav: Path, *, start_seconds: 
         import soundfile as sf  # type: ignore[import-not-found]
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "Range analysis requires librosa/soundfile; install with `python3 -m pip install -e '.[standalone]'`."
+            "Range analysis requires librosa/soundfile; reinstall the GUI with `python3 -m pip install -e '.[gui]'`."
         ) from exc
 
     audio, sample_rate = librosa.load(

@@ -13,20 +13,33 @@ dependencies = []
 [project.optional-dependencies]
 cqt = [
     "librosa>=0.10",
+    "numpy>=1.23",
+    "soundfile>=0.12",
 ]
 basic-pitch = [
     "basic-pitch[onnx]>=0.4",
 ]
 ml = [
     "librosa>=0.10",
+    "numpy>=1.23",
+    "soundfile>=0.12",
     "basic-pitch[onnx]>=0.4",
 ]
+# The GUI decodes MP3/FLAC/OGG, builds the pitch overview, and analyzes audio,
+# so it needs the audio/ML stack -- not just PySide6. Installing `.[gui]` must
+# give a GUI that can actually open a file and analyze it out of the box.
 gui = [
     "PySide6>=6.7",
     "pyqtgraph>=0.13",
+    "librosa>=0.10",
+    "numpy>=1.23",
+    "soundfile>=0.12",
+    "basic-pitch[onnx]>=0.4",
 ]
 standalone = [
     "librosa>=0.10",
+    "numpy>=1.23",
+    "soundfile>=0.12",
     "basic-pitch[onnx]>=0.4",
     "PySide6>=6.7",
     "pyqtgraph>=0.13",

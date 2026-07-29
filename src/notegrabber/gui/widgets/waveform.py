@@ -451,7 +451,7 @@ def load_waveform_preview(path: Path) -> tuple[list[float], int, float]:
         except Exception as fallback_error:
             raise RuntimeError(
                 "Waveform preview supports PCM WAV directly. For MP3/FLAC/OGG previews, "
-                "install standalone dependencies with `python3 -m pip install -e '.[standalone]'`. "
+                "reinstall the GUI with `python3 -m pip install -e '.[gui]'`. "
                 f"WAV error: {wav_error}; fallback error: {fallback_error}"
             ) from fallback_error
         return downsample_waveform_preview(samples), sample_rate, duration
