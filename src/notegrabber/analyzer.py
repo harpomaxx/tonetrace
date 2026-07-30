@@ -255,6 +255,7 @@ def analyze_basic_pitch(
     infer_onsets: bool = BASIC_PITCH_INFER_ONSETS,
     min_frequency: float | None = None,
     max_frequency: float | None = None,
+    include_pitch_bends: bool = True,
 ) -> tuple[list[MidiNote], dict[str, object]]:
     """Analyze audio with Spotify Basic Pitch and return notes plus model salience.
 
@@ -294,9 +295,10 @@ def analyze_basic_pitch(
         min_note_len=min_note_len,
         min_freq=min_frequency,
         max_freq=max_frequency,
+        include_pitch_bends=include_pitch_bends,
         midi_tempo=120,
     )
-    notes = [_basic_pitch_event_to_midi_note(event) for event in note_events]
+    notes = [_basic_pitch_event_to_midi_note(event, include_pitch_bends=include_pitch_bends) for event in note_events]
     heatmap = build_basic_pitch_heatmap(model_output, basic_pitch_constants)
     return sorted(notes, key=lambda note: (note.start_tick, note.pitch)), heatmap
 
@@ -318,12 +320,23 @@ def _suppress_basic_pitch_optional_backend_warnings():
         logging.disable(previous_disabled_level)
 
 
-def _basic_pitch_event_to_midi_note(event: object) -> MidiNote:
-    start_seconds, end_seconds, pitch, confidence, _pitch_bends = event  # type: ignore[misc]
+def _basic_pitch_event_to_midi_note(event: object, *, include_pitch_bends: bool = True) -> MidiNote:
+    start_seconds, end_seconds, pitch, confidence, pitch_bends = event  # type: ignore[misc]
     start_tick = round(float(start_seconds) * TICKS_PER_SECOND)
     duration_ticks = max(1, round((float(end_seconds) - float(start_seconds)) * TICKS_PER_SECOND))
     velocity = max(1, min(127, round(float(confidence) * 127)))
-    return MidiNote(pitch=int(pitch), start_tick=start_tick, duration_ticks=duration_ticks, velocity=velocity)
+    # Basic Pitch's pitch_bends is a list of ints in units of 1/3 semitone, one per
+    # model frame across the note (or None). Carry it so write_midi can emit bends.
+    bends: tuple[int, ...] | None = None
+    if include_pitch_bends and pitch_bends:
+        bends = tuple(int(value) for value in pitch_bends)
+    return MidiNote(
+        pitch=int(pitch),
+        start_tick=start_tick,
+        duration_ticks=duration_ticks,
+        velocity=velocity,
+        pitch_bends=bends,
+    )
 
 
 def build_basic_pitch_heatmap(model_output: dict[str, object], basic_pitch_constants: object) -> dict[str, object]:

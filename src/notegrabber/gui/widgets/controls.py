@@ -54,6 +54,7 @@ class AnalysisControls(QWidget):
     retune_requested = Signal()
     overlay_toggled = Signal(bool)
     heatmap_toggled = Signal(bool)
+    pitch_bends_toggled = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -79,6 +80,9 @@ class AnalysisControls(QWidget):
         self.notes_only = QCheckBox("Notes only (hide heatmap)")
         self.notes_only.setChecked(False)
         self.notes_only.setToolTip("Hide the pitch-salience heatmap and show only the extracted MIDI notes, to focus on the notes.")
+        self.show_pitch_bends = QCheckBox("Show pitch bends")
+        self.show_pitch_bends.setChecked(True)
+        self.show_pitch_bends.setToolTip("Draw each note's pitch-bend contour (slides, vibrato) as a curve. Most visible when zoomed in; only Basic Pitch produces bends.")
 
         self.open_button = self._action_button("Open", role="secondary", icon_name="folder")
         self.analyze_button = self._action_button("Analyze", role="primary", icon_name="analyze")
@@ -115,6 +119,7 @@ class AnalysisControls(QWidget):
         # Checkbox reads "Notes only", so emit "show heatmap" as its inverse to
         # mirror the set_show_notes wiring on the piano roll.
         self.notes_only.toggled.connect(lambda checked: self.heatmap_toggled.emit(not checked))
+        self.show_pitch_bends.toggled.connect(self.pitch_bends_toggled.emit)
         # Retune only when a knob change is committed (drag release / wheel /
         # key), not on every intermediate value, so dragging a knob does not
         # re-extract notes and repaint dozens of times per second. Value labels
@@ -225,6 +230,7 @@ class AnalysisControls(QWidget):
         )
         form.addRow(self.show_overlay)
         form.addRow(self.notes_only)
+        form.addRow(self.show_pitch_bends)
         return group
 
     @staticmethod
