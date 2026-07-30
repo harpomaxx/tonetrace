@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -155,13 +155,9 @@ def _offset_midi_notes(notes: list[MidiNote], offset_seconds: float) -> list[Mid
     """Return MIDI notes shifted later by offset seconds."""
 
     offset_ticks = max(0, round(offset_seconds * TICKS_PER_SECOND))
+    # replace() keeps every other field (notably pitch_bends) instead of dropping it.
     return [
-        MidiNote(
-            pitch=note.pitch,
-            start_tick=max(0, note.start_tick + offset_ticks),
-            duration_ticks=note.duration_ticks,
-            velocity=note.velocity,
-        )
+        replace(note, start_tick=max(0, note.start_tick + offset_ticks))
         for note in notes
     ]
 
@@ -185,14 +181,8 @@ def _clip_midi_notes_to_duration(notes: list[MidiNote], duration_seconds: float 
         if start_tick >= end_tick:
             continue
         duration_ticks = max(1, min(note.duration_ticks, end_tick - start_tick))
-        clipped.append(
-            MidiNote(
-                pitch=note.pitch,
-                start_tick=start_tick,
-                duration_ticks=duration_ticks,
-                velocity=note.velocity,
-            )
-        )
+        # replace() preserves pitch_bends and any future fields.
+        clipped.append(replace(note, start_tick=start_tick, duration_ticks=duration_ticks))
     return clipped
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QElapsedTimer, QThread, QTimer, Qt, QUrl
@@ -156,6 +157,13 @@ class MainWindow(QMainWindow):
         if not path.exists() or not path.is_file():
             QMessageBox.warning(self, "Audio not found", f"Cannot open audio file:\n{path}")
             return
+        # Stop any in-progress playback before swapping the media sources. Calling
+        # setSource() on a QMediaPlayer that is actively playing can deadlock the
+        # audio backend and hang the app, so tear playback down first. Also cancel
+        # any queued MIDI-preview render so it does not fire against the state we
+        # are about to reset.
+        self._stop_playback()
+        self.preview_debounce_timer.stop()
         self.state.audio_path = path
         self.state.rendered_midi_wav = None
         self.state.heatmap = None
@@ -789,12 +797,10 @@ class MainWindow(QMainWindow):
             if note_end <= note_start:
                 continue
             preview_notes.append(
-                GuiMidiNote(
-                    pitch=note.pitch,
+                replace(
+                    note,
                     start_seconds=note_start - start,
                     duration_seconds=note_end - note_start,
-                    velocity=note.velocity,
-                    source=note.source,
                 )
             )
         return preview_notes
