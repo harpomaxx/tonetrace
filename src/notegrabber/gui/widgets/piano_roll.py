@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from typing import Any
 
 from PySide6.QtCore import QRect, QSize, QRectF, Qt, Signal
@@ -29,6 +30,7 @@ class PianoRollWidget(QWidget):
         self._pitch_to_row: dict[int, int] = {}
         self.show_notes = True
         self.show_heatmap = True
+        self.show_pitch_bends = True
         self.selected_note_index: int | None = None
         self.hover_note_index: int | None = None
         self.hover_mode: str | None = None
@@ -157,6 +159,10 @@ class PianoRollWidget(QWidget):
 
     def set_show_heatmap(self, enabled: bool) -> None:
         self.show_heatmap = enabled
+        self.update()
+
+    def set_show_pitch_bends(self, enabled: bool) -> None:
+        self.show_pitch_bends = enabled
         self.update()
 
     def preview_note_edit(self, index: int, note: GuiMidiNote) -> None:
@@ -336,6 +342,8 @@ class PianoRollWidget(QWidget):
         self._draw_grid(painter)
         if self.show_notes:
             self._draw_notes(painter)
+            if self.show_pitch_bends:
+                self._draw_bend_curves(painter)
         self._draw_playhead(painter)
         # Keyboard is drawn last and pinned to the visible left edge so it stays
         # in view (opaque, over the content) while scrolling horizontally.
@@ -553,6 +561,41 @@ class PianoRollWidget(QWidget):
             if is_selected or is_hovered:
                 self._draw_note_handles(painter, rect, active=is_selected)
 
+    def _draw_bend_curves(self, painter: QPainter) -> None:
+        """Draw each note's pitch-bend contour as a polyline within/around its row.
+
+        The curve's vertical position tracks the bend in semitones (up = sharp),
+        scaled so one semitone equals one note-row height; large bends may extend
+        beyond the note's own row, which honestly reflects the pitch movement.
+        """
+
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QPolygonF
+
+        assert self.heatmap is not None
+        clip = painter.clipBoundingRect()
+        pen = QPen(QColor(120, 220, 255, 230), 1.6)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        for note in self.notes:
+            bends = note.pitch_bends
+            if not bends:
+                continue
+            rect = self._note_rect(note)
+            if rect is None:
+                continue
+            if not clip.isEmpty() and (rect.right() < clip.left() or rect.left() > clip.right()):
+                continue
+            row_center_y = rect.top() + rect.height() / 2.0
+            points = QPolygonF()
+            for time_in_note, semitones in bends:
+                x = self.keyboard_width + (note.start_seconds + time_in_note) / self.seconds_per_pixel
+                y = row_center_y - semitones * self.note_height
+                points.append(QPointF(x, y))
+            painter.drawPolyline(points)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+
     def _draw_note_handles(self, painter: QPainter, rect: QRectF, *, active: bool) -> None:
         handle_width = min(6.0, max(3.0, rect.width() / 3.0))
         handle_color = QColor(255, 235, 132, 235) if active else QColor(255, 198, 90, 210)
@@ -618,30 +661,21 @@ class PianoRollWidget(QWidget):
         if self.drag_mode == "resize_start":
             original_end = note.end_seconds
             start_seconds = min(max(0.0, note.start_seconds + delta_seconds), original_end - self.min_note_duration_seconds)
-            return GuiMidiNote(
-                pitch=note.pitch,
+            # replace() keeps pitch_bends so the bend curve survives the edit.
+            return replace(
+                note,
                 start_seconds=start_seconds,
                 duration_seconds=max(self.min_note_duration_seconds, original_end - start_seconds),
-                velocity=note.velocity,
-                source=note.source,
             )
         if self.drag_mode == "resize_end":
             end_seconds = max(note.start_seconds + self.min_note_duration_seconds, note.end_seconds + delta_seconds)
-            return GuiMidiNote(
-                pitch=note.pitch,
-                start_seconds=note.start_seconds,
-                duration_seconds=end_seconds - note.start_seconds,
-                velocity=note.velocity,
-                source=note.source,
-            )
+            return replace(note, duration_seconds=end_seconds - note.start_seconds)
         if self.drag_mode == "move":
             pitch = self._pitch_at_y(y)
-            return GuiMidiNote(
+            return replace(
+                note,
                 pitch=note.pitch if pitch is None else pitch,
                 start_seconds=max(0.0, note.start_seconds + delta_seconds),
-                duration_seconds=note.duration_seconds,
-                velocity=note.velocity,
-                source=note.source,
             )
         return None
 

@@ -19,7 +19,11 @@ from notegrabber.analyzer import (
     BackendName,
     notes_from_heatmap,
 )
-from notegrabber.midi import MidiNote, TICKS_PER_SECOND
+from notegrabber.midi import (
+    MidiNote,
+    PITCH_BEND_UNITS_PER_SEMITONE as _BEND_UNITS_PER_SEMITONE,
+    TICKS_PER_SECOND,
+)
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,10 @@ class GuiMidiNote:
     duration_seconds: float
     velocity: int
     source: str = "basic-pitch"
+    # Optional pitch-bend contour: evenly-spaced (time_in_note_seconds,
+    # semitone_offset) points across the note. ``None`` means no bend. Used to
+    # draw the bend curve in the piano roll; carried through edits unchanged.
+    pitch_bends: tuple[tuple[float, float], ...] | None = None
 
     @property
     def end_seconds(self) -> float:
@@ -168,12 +176,27 @@ def heatmap_from_document(document: dict[str, Any]) -> GuiHeatmap:
 def midi_note_to_gui(note: MidiNote, source: str = "basic-pitch") -> GuiMidiNote:
     """Convert an internal MIDI note into a GUI note."""
 
+    duration_seconds = note.duration_ticks / TICKS_PER_SECOND
+    bends: tuple[tuple[float, float], ...] | None = None
+    if note.pitch_bends:
+        # Convert Basic Pitch's 1/3-semitone units to semitone offsets, spaced
+        # evenly across the note's duration (matching how write_midi lays them out).
+        count = len(note.pitch_bends)
+        bends = tuple(
+            (
+                (index / count) * duration_seconds if count > 1 else 0.0,
+                units / _BEND_UNITS_PER_SEMITONE,
+            )
+            for index, units in enumerate(note.pitch_bends)
+        )
+
     return GuiMidiNote(
         pitch=int(note.pitch),
         start_seconds=note.start_tick / TICKS_PER_SECOND,
-        duration_seconds=note.duration_ticks / TICKS_PER_SECOND,
+        duration_seconds=duration_seconds,
         velocity=int(note.velocity),
         source=source,
+        pitch_bends=bends,
     )
 
 

@@ -289,6 +289,7 @@ class MainWindow(QMainWindow):
         self.controls.retune_requested.connect(self._retune_from_controls)
         self.controls.overlay_toggled.connect(self.piano_roll.set_show_notes)
         self.controls.heatmap_toggled.connect(self.piano_roll.set_show_heatmap)
+        self.controls.pitch_bends_toggled.connect(self.piano_roll.set_show_pitch_bends)
         self.transport.play_both_requested.connect(self._play_both)
         self.transport.play_original_requested.connect(self._play_original)
         self.transport.play_midi_requested.connect(self._play_midi)
