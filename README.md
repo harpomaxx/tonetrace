@@ -43,10 +43,12 @@ duration) are exposed on both the CLI and the GUI.
 
 ## Requirements
 
-- **Linux** (developed and tested there; not tested on other platforms)
+- **Linux** (primary), also usable on **Windows / macOS**
 - **Python ≥ 3.10**
-- Optional: **TiMidity++** on your `PATH` for rendering MIDI audio previews
-  (`sudo apt install timidity` on Debian/Ubuntu)
+- MIDI audio previews work out of the box with a built-in pure-Python synth (no
+  external tools). Optionally, install **TiMidity++** for a nicer sampled sound
+  (`sudo apt install timidity` on Debian/Ubuntu) and opt in with
+  `NOTEGRABBER_MIDI_SYNTH=timidity` — see [MIDI preview sound](#midi-preview-sound).
 
 ## Quick start
 
@@ -148,6 +150,22 @@ section (handy for long files), pick a backend, and click **Analyze**. Then:
 - Select, drag, resize, retune, and delete notes; edits re-render the MIDI
   preview.
 - **Export** the edited notes as a Standard MIDI File.
+
+#### MIDI preview sound
+
+To *hear* the transcription, the app renders the MIDI notes to audio and plays
+that. There are two backends:
+
+- **`native`** (default) — a built-in pure-Python synth (numpy sine + envelope).
+  No external tools, no soundfont; identical on Windows, Linux, and macOS. Sounds
+  like a synth, which is plenty for checking notes and timing.
+- **`timidity`** — renders with [TiMidity++](https://timidity.sourceforge.net/)
+  for a nicer sampled sound. Opt in by setting an environment variable; if
+  TiMidity++ is not on `PATH`, it transparently falls back to the native synth:
+
+  ```bash
+  NOTEGRABBER_MIDI_SYNTH=timidity notegrabber-gui
+  ```
 
 ### CLI
 
