@@ -41,6 +41,7 @@ class PianoRollWidget(QWidget):
         self.hover_note_index: int | None = None
         self.hover_mode: str | None = None
         self.playhead_seconds = 0.0
+        self._last_active_pitches: set[int] = set()
         self.seconds_per_pixel = 0.01
         self.fit_seconds_per_pixel = 0.01
         self.horizontal_zoom = 1.0
@@ -232,11 +233,25 @@ class PianoRollWidget(QWidget):
         if self.heatmap is None:
             self.update()
             return
-        self.update(self._playhead_update_rect(old_seconds).united(self._playhead_update_rect(self.playhead_seconds)))
+        dirty = self._playhead_update_rect(old_seconds).united(self._playhead_update_rect(self.playhead_seconds))
+        # The sounding keys on the keyboard change only when the playhead crosses a
+        # note boundary. Repaint the (left-pinned) keyboard strip only then, so a
+        # normal playback tick stays as cheap as a thin playhead-strip update.
+        active = self._active_pitches()
+        if active != self._last_active_pitches:
+            self._last_active_pitches = active
+            dirty = dirty.united(self._keyboard_update_rect())
+        self.update(dirty)
 
     def _playhead_update_rect(self, seconds: float) -> QRect:
         x = int(self.keyboard_width + max(0.0, seconds) / self.seconds_per_pixel)
         return QRect(max(0, x - 3), 0, 7, self.height())
+
+    def _keyboard_update_rect(self) -> QRect:
+        """Repaint region for the left-pinned keyboard strip at its current offset."""
+
+        left = self._horizontal_scroll_offset()
+        return QRect(left, 0, self.keyboard_width, self.height())
 
     def x_for_seconds(self, seconds: float) -> int:
         """Return the canvas x pixel for a time in seconds (keyboard offset included)."""
@@ -403,11 +418,22 @@ class PianoRollWidget(QWidget):
         right = float(min(self.width(), offset + viewport_width))
         return left, right
 
+    def _active_pitches(self) -> set[int]:
+        """Return the set of note pitches sounding at the current playhead time.
+
+        A note is sounding when the playhead is within [start, end). Used to
+        highlight the corresponding keys on the keyboard during playback.
+        """
+
+        t = self.playhead_seconds
+        return {note.pitch for note in self.notes if note.start_seconds <= t < note.end_seconds}
+
     def _draw_keyboard(self, painter: QPainter) -> None:
         assert self.heatmap is not None
         # Pin to the visible left edge so the keyboard stays put while the
         # heatmap scrolls horizontally underneath it.
         left = self._horizontal_scroll_offset()
+        active = self._active_pitches()
         painter.fillRect(left, 0, self.keyboard_width, self.height(), QColor(20, 24, 34))
         painter.setPen(QColor(190, 200, 220))
         for index, pitch in enumerate(reversed(self.heatmap.midi_notes)):
@@ -415,7 +441,12 @@ class PianoRollWidget(QWidget):
             if y > self.height():
                 break
             is_black = pitch % 12 in {1, 3, 6, 8, 10}
-            painter.fillRect(left, y, self.keyboard_width, self.note_height, QColor(32, 36, 48) if is_black else QColor(52, 57, 70))
+            if pitch in active:
+                # A key sounding at the playhead: warm accent, matching the playhead.
+                key_color = QColor(255, 196, 84)
+            else:
+                key_color = QColor(32, 36, 48) if is_black else QColor(52, 57, 70)
+            painter.fillRect(left, y, self.keyboard_width, self.note_height, key_color)
             if pitch % 12 == 0:
                 painter.drawText(left + 4, y + self.note_height - 1, f"C{pitch // 12 - 1}")
 
