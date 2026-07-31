@@ -98,3 +98,51 @@ def test_no_heat_when_all_silent():
     )
     _, image = _render_zoomed_out(silent)
     assert not _has_heat_pixel(image)
+
+
+def test_blit_image_is_bounded_to_viewport_not_canvas():
+    """Zooming in must not build a full-canvas-width image.
+
+    Regression guard for the 'unusable when zoomed with heatmap' bug: the cached
+    image width must track the viewport (plus margin), not the (possibly huge)
+    zoomed-in canvas width. Otherwise the per-column build loop grows without
+    bound as you zoom in.
+    """
+
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QColor, QImage
+    from PySide6.QtWidgets import QApplication, QScrollArea
+
+    from notegrabber.gui.widgets.piano_roll import PianoRollWidget
+
+    QApplication.instance() or QApplication([])
+    heatmap = _make_heatmap(spike_frame=1000, frame_count=15000)
+
+    area = QScrollArea()
+    area.resize(800, 400)
+    roll = PianoRollWidget()
+    area.setWidget(roll)
+    area.setWidgetResizable(False)
+    roll.set_data(heatmap, [], full_duration_seconds=heatmap.duration_seconds)
+    area.show()
+
+    def paint():
+        img = QImage(area.viewport().size(), QImage.Format.Format_ARGB32)
+        img.fill(QColor(0, 0, 0))
+        roll.render(img, QPoint(-roll._horizontal_scroll_offset(), 0))
+
+    viewport_w = area.viewport().width()
+    for zoom in (1, 8, 16):
+        roll.set_horizontal_zoom(zoom)
+        QApplication.processEvents()
+        roll._invalidate_heatmap_image()
+        paint()
+        if roll._heatmap_image is None:
+            continue  # numpy unavailable; blit path skipped
+        # Image covers the viewport plus at most a margin on each side, never the
+        # whole canvas (which is viewport * zoom).
+        max_expected = viewport_w + 2 * roll._HEATMAP_SPAN_MARGIN + 64
+        assert roll._heatmap_image.width() <= max_expected, (
+            f"zoom {zoom}: image width {roll._heatmap_image.width()} exceeds "
+            f"viewport-bounded {max_expected} (canvas width {roll.width()})"
+        )

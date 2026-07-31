@@ -33,6 +33,7 @@ class PianoRollWidget(QWidget):
         # can blit it instead of re-drawing every cell. See _heatmap_image().
         self._heatmap_image: Any = None
         self._heatmap_image_key: tuple | None = None
+        self._heatmap_image_span: tuple[int, int] = (0, 0)
         self.show_notes = True
         self.show_heatmap = True
         self.show_pitch_bends = True
@@ -118,6 +119,7 @@ class PianoRollWidget(QWidget):
 
         self._heatmap_image = None
         self._heatmap_image_key = None
+        self._heatmap_image_span = (0, 0)
 
     def _timeline_duration_seconds(self) -> float:
         """Total time span the canvas represents (full song when known)."""
@@ -386,6 +388,21 @@ class PianoRollWidget(QWidget):
             return 0
         return max(0, bar().value())
 
+    def _visible_x_range(self) -> tuple[float, float]:
+        """Return the (left, right) canvas x range currently visible in the viewport.
+
+        When the widget is inside a QScrollArea this is the scroll offset plus the
+        viewport width; otherwise it is the whole widget. Used to bound painting to
+        what is on screen rather than the full zoomed-in canvas.
+        """
+
+        offset = self._horizontal_scroll_offset()
+        viewport = self.parentWidget()
+        viewport_width = viewport.width() if viewport is not None else self.width()
+        left = float(offset)
+        right = float(min(self.width(), offset + viewport_width))
+        return left, right
+
     def _draw_keyboard(self, painter: QPainter) -> None:
         assert self.heatmap is not None
         # Pin to the visible left edge so the keyboard stays put while the
@@ -406,22 +423,33 @@ class PianoRollWidget(QWidget):
         assert self.heatmap is not None
         if not self.heatmap.frame_times:
             return
+        # Bound painting to the visible viewport, not the full (possibly huge)
+        # canvas. A scroll repaint clips to the exposed rect; a full update() (e.g.
+        # from zoom) has an empty clip, so fall back to the scroll-area viewport
+        # range -- otherwise the whole zoomed-in timeline would be rebuilt/painted.
+        vis_left, vis_right = self._visible_x_range()
         clip = painter.clipBoundingRect()
-        left = max(float(self.keyboard_width), clip.left() if not clip.isEmpty() else 0.0)
-        right = min(float(self.width()), clip.right() if not clip.isEmpty() else float(self.width()))
+        left = max(float(self.keyboard_width), clip.left() if not clip.isEmpty() else vis_left)
+        right = min(clip.right() if not clip.isEmpty() else vis_right, vis_right)
         if right <= left:
             return
 
         frame_step_seconds = self._frame_step_seconds()
         display_frame_width = frame_step_seconds / self.seconds_per_pixel
-        # For zoomed-in/short files, draw real frame rectangles. For long files,
-        # aggregate into visible pixel columns so painting is bounded by screen
-        # pixels rather than by every model frame in a large MP3/recording.
+        # Use the blit for anything up to a few pixels per frame: there the heatmap
+        # is still essentially one column per pixel, so the cached image renders it
+        # identically and cheaply. Only when frames are genuinely wide (several px
+        # each, so few of them fit the viewport) do per-frame fillRects become both
+        # necessary for crispness and cheap enough. This keeps deep zoom on a dense
+        # heatmap interactive instead of doing ~100k fillRects per repaint.
+        if display_frame_width < self._BLIT_MAX_FRAME_WIDTH and self._blit_heatmap_columns(
+            painter, math.floor(left), math.ceil(right)
+        ):
+            return
         if display_frame_width >= 0.75:
-            # Zoomed in: few frames on screen, per-frame fillRects are already cheap.
             self._draw_heatmap_frames(painter, left, right, max(1.0, display_frame_width))
-        elif not self._blit_heatmap_columns(painter, math.floor(left), math.ceil(right)):
-            # Blit path unavailable (no numpy); fall back to per-cell painting.
+        else:
+            # Blit unavailable (no numpy) and frames too narrow: per-cell fallback.
             self._draw_heatmap_columns(painter, math.floor(left), math.ceil(right), frame_step_seconds)
 
     def _blit_heatmap_columns(self, painter: QPainter, left: int, right: int) -> bool:
@@ -435,55 +463,88 @@ class PianoRollWidget(QWidget):
         """
 
         assert self.heatmap is not None
-        image = self._heatmap_image_for_current_scale()
-        if image is None:
-            return False
         note_count = self.heatmap.note_count
         start_x = max(self.keyboard_width, left)
-        end_x = min(self.width(), right, self.keyboard_width + image.width())
+        end_x = min(self.width(), right)
         if end_x <= start_x:
             return True
-        # Source columns are canvas-x minus the keyboard offset; target rows span
-        # the full note stack scaled to note_height.
-        source = QRect(start_x - self.keyboard_width, 0, end_x - start_x, note_count)
-        target = QRect(start_x, 0, end_x - start_x, note_count * self.note_height)
+        # Column offsets are canvas-x minus the keyboard; the cached image only
+        # covers the visible span, so blit failure means "no numpy" -> fall back.
+        col_start = start_x - self.keyboard_width
+        col_end = end_x - self.keyboard_width
+        image, span_start = self._heatmap_image_for_span(col_start, col_end)
+        if image is None:
+            return False
+        # Sub-slice the cached span image to the requested visible columns.
+        src_left = col_start - span_start
+        src_width = min(col_end - col_start, image.width() - src_left)
+        if src_width <= 0:
+            return True
+        source = QRect(src_left, 0, src_width, note_count)
+        target = QRect(self.keyboard_width + col_start, 0, src_width, note_count * self.note_height)
         was_smooth = painter.testRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
         painter.drawImage(target, image, source)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, was_smooth)
         return True
 
-    def _heatmap_image_for_current_scale(self) -> Any:
-        """Return the cached heatmap QImage, rebuilding it if the scale changed.
+    # Extra columns rendered on each side of the visible span so that small
+    # scrolls reuse the cached image instead of forcing a rebuild every step.
+    _HEATMAP_SPAN_MARGIN = 512
 
-        The image is keyed on everything that changes its pixels: heatmap identity,
-        horizontal scale, canvas width, and the frame-time offset. Vertical zoom is
-        deliberately excluded -- it only affects the blit target height.
+    # Blit the cached image while each model frame is narrower than this many
+    # pixels; above it, frames are wide and few, so per-frame fillRects are crisp
+    # and cheap. 4px keeps the per-frame path's on-screen frame count bounded
+    # (<~viewport_width/4) while giving the blit the whole dense-zoom range.
+    _BLIT_MAX_FRAME_WIDTH = 4.0
+
+    def _heatmap_image_for_span(self, col_start: int, col_end: int) -> tuple[Any, int]:
+        """Return (image, span_start_column) covering the visible column range.
+
+        The image is built only for the visible span (plus a margin), not the full
+        timeline, so its cost is bounded by the viewport width regardless of zoom
+        or song length. Reused while the requested range stays inside the cached
+        span and the scale is unchanged; horizontal scroll past the margin, zoom,
+        or a new heatmap rebuilds it. Vertical zoom does not (rows scale at blit).
         """
 
         assert self.heatmap is not None
-        width = max(0, int(self.width()) - self.keyboard_width)
-        key = (
+        scale_key = (
             id(self.heatmap),
             round(self.seconds_per_pixel, 9),
-            width,
             round(self._first_frame_seconds(), 6),
             round(self._frame_step_seconds(), 9),
         )
-        if self._heatmap_image_key == key and self._heatmap_image is not None:
-            return self._heatmap_image
-        image = self._build_heatmap_image(width)
+        cache = self._heatmap_image
+        if (
+            cache is not None
+            and self._heatmap_image_key == scale_key
+            and self._heatmap_image_span[0] <= col_start
+            and col_end <= self._heatmap_image_span[1]
+        ):
+            return cache, self._heatmap_image_span[0]
+
+        # Build a margin-padded span, clamped to the non-negative column range.
+        span_start = max(0, col_start - self._HEATMAP_SPAN_MARGIN)
+        span_end = col_end + self._HEATMAP_SPAN_MARGIN
+        image = self._build_heatmap_image(span_start, span_end - span_start)
+        if image is None:
+            self._heatmap_image = None
+            self._heatmap_image_key = None
+            return None, 0
         self._heatmap_image = image
-        self._heatmap_image_key = key if image is not None else None
-        return image
+        self._heatmap_image_key = scale_key
+        self._heatmap_image_span = (span_start, span_start + image.width())
+        return image, span_start
 
-    def _build_heatmap_image(self, width: int) -> Any:
-        """Rasterize the aggregated heatmap into an ARGB32 QImage, or None.
+    def _build_heatmap_image(self, col_start: int, width: int) -> Any:
+        """Rasterize a column span of the aggregated heatmap into an ARGB32 QImage.
 
-        One image column per canvas pixel, one row per note. Each pixel column takes
-        the same stride-sampled ``max`` over its frame window that the per-cell path
-        uses, so transient one-frame activations survive at low zoom. Returns
-        ``None`` when numpy is unavailable so the caller falls back to per-cell.
+        Columns ``[col_start, col_start + width)`` are canvas pixels (keyboard
+        offset already removed). One image row per note. Each column takes the same
+        stride-sampled ``max`` over its frame window that the per-cell path uses, so
+        transient one-frame activations survive at low zoom. Returns ``None`` when
+        numpy is unavailable so the caller falls back to per-cell.
         """
 
         assert self.heatmap is not None
@@ -504,7 +565,8 @@ class PianoRollWidget(QWidget):
         # (width, note_count) activation, note rows top-to-bottom (high pitch first)
         # to match the fillRect path's y = (note_count - 1 - note_index) layout.
         column_max = np.zeros((width, note_count), dtype=np.float32)
-        for px in range(width):
+        for i in range(width):
+            px = col_start + i
             start_time = px * self.seconds_per_pixel - first_frame_seconds
             end_time = start_time + self.seconds_per_pixel
             if end_time <= 0.0:
@@ -514,7 +576,7 @@ class PianoRollWidget(QWidget):
                 break
             end_frame = min(frame_count, max(start_frame + 1, int(math.ceil(end_time / frame_step))))
             stride = max(1, (end_frame - start_frame) // 5)
-            column_max[px] = matrix[start_frame:end_frame:stride].max(axis=0)
+            column_max[i] = matrix[start_frame:end_frame:stride].max(axis=0)
 
         # Flip note axis so row 0 is the top (highest pitch), then LUT-map to RGBA.
         rows_top_down = column_max[:, ::-1].T  # (note_count, width)
