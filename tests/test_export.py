@@ -66,3 +66,46 @@ def test_export_unsupported_extension_returns_message(tmp_path):
     result, error = export_notes(_notes(), tmp_path / "song.xyz")
     assert result is None
     assert error and "Unsupported" in error
+
+
+def test_audio_export_trims_leading_silence(tmp_path):
+    """A range analysis places notes at their absolute time (e.g. 40s). Audio export
+    must shift to t=0 so the clip is not mostly leading silence (the 'no sound' bug).
+    """
+
+    pytest.importorskip("numpy")
+    import numpy as np
+
+    offset_ticks = 40 * TICKS_PER_SECOND
+    notes = [
+        MidiNote(pitch=60, start_tick=offset_ticks, duration_ticks=TICKS_PER_SECOND // 2, velocity=90),
+        MidiNote(pitch=64, start_tick=offset_ticks + TICKS_PER_SECOND // 2, duration_ticks=TICKS_PER_SECOND // 2, velocity=90),
+    ]
+    out = tmp_path / "range.wav"
+    result, error = export_notes(notes, out)
+    assert error is None, error
+
+    with wave.open(str(out), "rb") as w:
+        frames = w.getnframes()
+        rate = w.getframerate()
+        raw = w.readframes(frames)
+    samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    duration = frames / rate
+    # Clip is a couple of seconds, not 40+; audio is present in the first second.
+    assert duration < 5.0, f"export kept leading silence: {duration:.1f}s"
+    assert np.max(np.abs(samples[:rate])) > 0.05, "no audio at the start of the clip"
+
+
+def test_midi_export_keeps_absolute_timeline(tmp_path):
+    """MIDI export must NOT shift notes -- a .mid should align to the original song."""
+
+    from notegrabber.midi import write_midi
+
+    offset_ticks = 40 * TICKS_PER_SECOND
+    notes = [MidiNote(pitch=60, start_tick=offset_ticks, duration_ticks=TICKS_PER_SECOND, velocity=90)]
+    exported = tmp_path / "a.mid"
+    reference = tmp_path / "b.mid"
+    export_notes(notes, exported)
+    write_midi(reference, notes)
+    # Byte-identical to a direct write: no shifting applied on the MIDI path.
+    assert exported.read_bytes() == reference.read_bytes()

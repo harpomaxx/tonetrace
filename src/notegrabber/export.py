@@ -13,6 +13,7 @@ failure so GUI/CLI callers can surface a message instead of raising.
 from __future__ import annotations
 
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 from .midi import MidiNote, write_midi
@@ -63,9 +64,28 @@ def export_notes(notes: list[MidiNote], path: Path) -> tuple[Path | None, str | 
     return _export_audio(notes, path, fmt)
 
 
+def _shift_notes_to_start(notes: list[MidiNote]) -> list[MidiNote]:
+    """Shift notes so the earliest one begins at tick 0.
+
+    A rendered-audio clip is standalone, so it should start at the first note
+    rather than reproducing the note's absolute position on the original song
+    timeline. Without this, a range analysis starting at (say) 40s exports a file
+    with 40s of leading silence -- which sounds like "no sound" when you play the
+    start. (MIDI export keeps the absolute timeline, so it is not shifted.)
+    """
+
+    if not notes:
+        return notes
+    offset = min(max(0, int(note.start_tick)) for note in notes)
+    if offset == 0:
+        return list(notes)
+    return [replace(note, start_tick=max(0, int(note.start_tick) - offset)) for note in notes]
+
+
 def _export_audio(notes: list[MidiNote], path: Path, fmt: str) -> tuple[Path | None, str | None]:
     """Synthesize ``notes`` to audio at ``path`` in the given format."""
 
+    notes = _shift_notes_to_start(notes)
     with tempfile.TemporaryDirectory(prefix="notegrabber-export-") as tmp:
         tmp_dir = Path(tmp)
         midi_path = tmp_dir / "export.mid"
