@@ -28,6 +28,11 @@ class PianoRollWidget(QWidget):
         self.notes: list[GuiMidiNote] = []
         self.full_duration_seconds = 0.0
         self._pitch_to_row: dict[int, int] = {}
+        # Cached QImage of the zoomed-out heatmap (one canvas pixel per column,
+        # one image row per note) plus the params it was built under, so a repaint
+        # can blit it instead of re-drawing every cell. See _heatmap_image().
+        self._heatmap_image: Any = None
+        self._heatmap_image_key: tuple | None = None
         self.show_notes = True
         self.show_heatmap = True
         self.show_pitch_bends = True
@@ -74,6 +79,8 @@ class PianoRollWidget(QWidget):
         """
 
         heatmap_changed = heatmap is not self.heatmap
+        if heatmap_changed:
+            self._invalidate_heatmap_image()
         self.heatmap = heatmap
         self.notes = notes
         self.full_duration_seconds = max(0.0, float(full_duration_seconds or 0.0))
@@ -98,6 +105,19 @@ class PianoRollWidget(QWidget):
         self._update_canvas_size()
         self.updateGeometry()
         self.update()
+
+    def _invalidate_heatmap_image(self) -> None:
+        """Drop the cached heatmap image so the next repaint rebuilds it.
+
+        Called whenever anything the image depends on changes: the heatmap data,
+        the horizontal scale (``seconds_per_pixel``), or the canvas width. It does
+        *not* need calling on vertical zoom -- the image stores one row per note
+        and is scaled to ``note_height`` at blit time -- nor on horizontal scroll,
+        which only changes which slice is blitted.
+        """
+
+        self._heatmap_image = None
+        self._heatmap_image_key = None
 
     def _timeline_duration_seconds(self) -> float:
         """Total time span the canvas represents (full song when known)."""
@@ -398,9 +418,113 @@ class PianoRollWidget(QWidget):
         # aggregate into visible pixel columns so painting is bounded by screen
         # pixels rather than by every model frame in a large MP3/recording.
         if display_frame_width >= 0.75:
+            # Zoomed in: few frames on screen, per-frame fillRects are already cheap.
             self._draw_heatmap_frames(painter, left, right, max(1.0, display_frame_width))
-        else:
+        elif not self._blit_heatmap_columns(painter, math.floor(left), math.ceil(right)):
+            # Blit path unavailable (no numpy); fall back to per-cell painting.
             self._draw_heatmap_columns(painter, math.floor(left), math.ceil(right), frame_step_seconds)
+
+    def _blit_heatmap_columns(self, painter: QPainter, left: int, right: int) -> bool:
+        """Blit the cached heatmap image for the visible column span.
+
+        Returns ``False`` if the image could not be built (e.g. numpy missing), so
+        the caller can fall back to the per-cell path. The cached image is one
+        canvas pixel wide per column and one pixel tall per note row; ``drawImage``
+        scales it vertically to ``note_height`` with smoothing off, so each note
+        row expands by exact pixel replication (no color bleed between rows).
+        """
+
+        assert self.heatmap is not None
+        image = self._heatmap_image_for_current_scale()
+        if image is None:
+            return False
+        note_count = self.heatmap.note_count
+        start_x = max(self.keyboard_width, left)
+        end_x = min(self.width(), right, self.keyboard_width + image.width())
+        if end_x <= start_x:
+            return True
+        # Source columns are canvas-x minus the keyboard offset; target rows span
+        # the full note stack scaled to note_height.
+        source = QRect(start_x - self.keyboard_width, 0, end_x - start_x, note_count)
+        target = QRect(start_x, 0, end_x - start_x, note_count * self.note_height)
+        was_smooth = painter.testRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+        painter.drawImage(target, image, source)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, was_smooth)
+        return True
+
+    def _heatmap_image_for_current_scale(self) -> Any:
+        """Return the cached heatmap QImage, rebuilding it if the scale changed.
+
+        The image is keyed on everything that changes its pixels: heatmap identity,
+        horizontal scale, canvas width, and the frame-time offset. Vertical zoom is
+        deliberately excluded -- it only affects the blit target height.
+        """
+
+        assert self.heatmap is not None
+        width = max(0, int(self.width()) - self.keyboard_width)
+        key = (
+            id(self.heatmap),
+            round(self.seconds_per_pixel, 9),
+            width,
+            round(self._first_frame_seconds(), 6),
+            round(self._frame_step_seconds(), 9),
+        )
+        if self._heatmap_image_key == key and self._heatmap_image is not None:
+            return self._heatmap_image
+        image = self._build_heatmap_image(width)
+        self._heatmap_image = image
+        self._heatmap_image_key = key if image is not None else None
+        return image
+
+    def _build_heatmap_image(self, width: int) -> Any:
+        """Rasterize the aggregated heatmap into an ARGB32 QImage, or None.
+
+        One image column per canvas pixel, one row per note. Each pixel column takes
+        the same stride-sampled ``max`` over its frame window that the per-cell path
+        uses, so transient one-frame activations survive at low zoom. Returns
+        ``None`` when numpy is unavailable so the caller falls back to per-cell.
+        """
+
+        assert self.heatmap is not None
+        try:
+            import numpy as np  # type: ignore[import-not-found]
+        except Exception:
+            return None
+        from PySide6.QtGui import QImage
+
+        matrix = self.heatmap.activation_matrix()
+        note_count = self.heatmap.note_count
+        if matrix is None or width <= 0 or note_count == 0:
+            return None
+        frame_count = self.heatmap.frame_count
+        frame_step = self._frame_step_seconds()
+        first_frame_seconds = self._first_frame_seconds()
+
+        # (width, note_count) activation, note rows top-to-bottom (high pitch first)
+        # to match the fillRect path's y = (note_count - 1 - note_index) layout.
+        column_max = np.zeros((width, note_count), dtype=np.float32)
+        for px in range(width):
+            start_time = px * self.seconds_per_pixel - first_frame_seconds
+            end_time = start_time + self.seconds_per_pixel
+            if end_time <= 0.0:
+                continue
+            start_frame = int(start_time / frame_step) if start_time > 0 else 0
+            if start_frame >= frame_count:
+                break
+            end_frame = min(frame_count, max(start_frame + 1, int(math.ceil(end_time / frame_step))))
+            stride = max(1, (end_frame - start_frame) // 5)
+            column_max[px] = matrix[start_frame:end_frame:stride].max(axis=0)
+
+        # Flip note axis so row 0 is the top (highest pitch), then LUT-map to RGBA.
+        rows_top_down = column_max[:, ::-1].T  # (note_count, width)
+        indices = np.clip(rows_top_down * 255.0, 0, 255).astype(np.uint8)
+        rgba = self._heat_rgba_lut()[indices]  # (note_count, width, 4)
+        rgba = np.ascontiguousarray(rgba)
+        image = QImage(rgba.data, width, note_count, width * 4, QImage.Format.Format_ARGB32)
+        # QImage does not own the numpy buffer; copy so it stays valid after return.
+        image = image.copy()
+        return image
 
     def _draw_heatmap_frames(self, painter: QPainter, left: float, right: float, frame_width: float) -> None:
         assert self.heatmap is not None
@@ -697,8 +821,21 @@ class PianoRollWidget(QWidget):
         painter.setPen(QPen(QColor(255, 230, 120), 2))
         painter.drawLine(x, 0, x, self.height())
 
+    # 256-entry color lookup table, built lazily and shared by every instance.
+    # Rebuilding a QColor per heatmap cell dominated repaint cost; quantising the
+    # activation to a byte and indexing this list removes that per-cell work.
+    _HEAT_LUT: list[QColor] | None = None
+
+    @classmethod
+    def _heat_lut(cls) -> list[QColor]:
+        lut = cls._HEAT_LUT
+        if lut is None:
+            lut = [cls._heat_color_exact(i / 255.0) for i in range(256)]
+            cls._HEAT_LUT = lut
+        return lut
+
     @staticmethod
-    def _heat_color(value: float) -> QColor:
+    def _heat_color_exact(value: float) -> QColor:
         value = max(0.0, min(1.0, value))
         return QColor(
             int(45 + 210 * value),
@@ -706,3 +843,29 @@ class PianoRollWidget(QWidget):
             int(8 + 22 * (1.0 - value)),
             int(42 + 205 * value),
         )
+
+    @classmethod
+    def _heat_color(cls, value: float) -> QColor:
+        index = int(max(0.0, min(1.0, value)) * 255.0)
+        return cls._heat_lut()[index]
+
+    # numpy RGBA lookup table (256, 4) in the byte order QImage.Format_ARGB32
+    # expects on a little-endian host: B, G, R, A. Built from the same color
+    # ramp as the QColor LUT so the blitted heatmap matches the fillRect path.
+    _HEAT_RGBA_LUT: Any = None
+
+    @classmethod
+    def _heat_rgba_lut(cls) -> Any:
+        lut = cls._HEAT_RGBA_LUT
+        if lut is None:
+            import numpy as np  # type: ignore[import-not-found]
+
+            values = np.arange(256, dtype=np.float32) / 255.0
+            r = (45 + 210 * values).astype(np.uint8)
+            g = (18 + 150 * values).astype(np.uint8)
+            b = (8 + 22 * (1.0 - values)).astype(np.uint8)
+            a = (42 + 205 * values).astype(np.uint8)
+            # ARGB32 stored little-endian is B, G, R, A byte order in memory.
+            lut = np.stack([b, g, r, a], axis=1)
+            cls._HEAT_RGBA_LUT = lut
+        return lut
