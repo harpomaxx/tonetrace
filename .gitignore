@@ -15,3 +15,10 @@ __pycache__/
 out/
 oxi.wav
 stems/
+# Exported / rendered audio and MIDI dropped at the repo root during manual testing
+/*.wav
+/*.mp3
+/*.ogg
+/*.flac
+/*.mid
+/*.midi
