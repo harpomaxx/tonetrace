@@ -153,6 +153,11 @@ section (handy for long files), pick a backend, and click **Analyze**. Then:
   (WAV / MP3 / FLAC / OGG). Audio is synthesized with the built-in synth and
   encoded via `soundfile`; MP3/FLAC/OGG need a libsndfile build with that codec
   (libsndfile ≥ 1.1 for MP3), otherwise the export reports which format failed.
+- **Switch themes** from **Appearance → Theme** in the left panel. The default
+  *Midnight* look ships alongside a *ReBirth RB-338* theme; the choice reskins
+  the whole app (chrome, knobs, waveform, heatmap, notes) and is remembered
+  across launches. New themes are added by registering a palette in
+  `gui/theme.py`.
 
 #### MIDI preview sound
 

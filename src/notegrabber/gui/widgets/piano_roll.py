@@ -11,6 +11,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from notegrabber.gui.state import GuiHeatmap, GuiMidiNote
+from notegrabber.gui.theme import active_theme, qcolor
 
 # Chromatic note names, index 0 == C. Combined with the octave (MIDI pitch // 12
 # - 1) this yields labels like "C4", "F#3" -- matching the "C4" octave marks the
@@ -381,12 +382,13 @@ class PianoRollWidget(QWidget):
         super().leaveEvent(event)
 
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt API
+        theme = active_theme()
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(9, 10, 18))
+        painter.fillRect(self.rect(), qcolor(theme.canvas_bg))
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
         if self.heatmap is None:
-            painter.setPen(QColor(170, 180, 195))
+            painter.setPen(qcolor(theme.text_dim))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Analyze audio to show heatmap and MIDI notes")
             return
 
@@ -448,9 +450,10 @@ class PianoRollWidget(QWidget):
         assert self.heatmap is not None
         # Pin to the visible left edge so the keyboard stays put while the
         # heatmap scrolls horizontally underneath it.
+        theme = active_theme()
         left = self._horizontal_scroll_offset()
         active = self._active_pitches()
-        painter.fillRect(left, 0, self.keyboard_width, self.height(), QColor(20, 24, 34))
+        painter.fillRect(left, 0, self.keyboard_width, self.height(), qcolor(theme.keyboard_bg))
         base_font = painter.font()
         bold_font = QFont(base_font)
         bold_font.setBold(True)
@@ -464,9 +467,9 @@ class PianoRollWidget(QWidget):
             is_black = pitch % 12 in {1, 3, 6, 8, 10}
             if pitch in active:
                 # A key sounding at the playhead: warm accent, matching the playhead.
-                key_color = QColor(255, 196, 84)
+                key_color = qcolor(theme.key_active)
             else:
-                key_color = QColor(32, 36, 48) if is_black else QColor(52, 57, 70)
+                key_color = qcolor(theme.key_black) if is_black else qcolor(theme.key_white)
             painter.fillRect(left, y, self.keyboard_width, self.note_height, key_color)
             if pitch in active and label_active:
                 # Name the sounding key on the key itself: bold, dark for contrast
@@ -480,7 +483,7 @@ class PianoRollWidget(QWidget):
                 )
                 painter.setFont(base_font)
             elif pitch % 12 == 0:
-                painter.setPen(QColor(190, 200, 220))
+                painter.setPen(qcolor(theme.text_dim))
                 painter.drawText(left + 4, y + self.note_height - 1, _pitch_note_name(pitch))
 
     def _draw_heatmap(self, painter: QPainter) -> None:
@@ -575,6 +578,7 @@ class PianoRollWidget(QWidget):
         assert self.heatmap is not None
         scale_key = (
             id(self.heatmap),
+            active_theme().id,  # a theme change recolors the ramp -> rebuild the image
             round(self.seconds_per_pixel, 9),
             round(self._first_frame_seconds(), 6),
             round(self._frame_step_seconds(), 9),
@@ -755,12 +759,16 @@ class PianoRollWidget(QWidget):
 
     def _draw_grid(self, painter: QPainter) -> None:
         assert self.heatmap is not None
-        painter.setPen(QPen(QColor(255, 255, 255, 28), 1))
+        grid = qcolor(active_theme().grid)
+        # Octave lines slightly dimmer than the time grid (as before: 28 vs 36).
+        octave = QColor(grid)
+        octave.setAlpha(max(1, int(grid.alpha() * 0.78)))
+        painter.setPen(QPen(octave, 1))
         for note_index, pitch in enumerate(reversed(self.heatmap.midi_notes)):
             if pitch % 12 == 0:
                 y = note_index * self.note_height
                 painter.drawLine(self.keyboard_width, y, self.width(), y)
-        painter.setPen(QPen(QColor(255, 255, 255, 36), 1))
+        painter.setPen(QPen(grid, 1))
         duration = self._timeline_duration_seconds()
         interval = self._grid_interval_seconds()
         # Only draw grid lines within the visible clip so a full-song timeline
@@ -789,6 +797,13 @@ class PianoRollWidget(QWidget):
 
     def _draw_notes(self, painter: QPainter) -> None:
         assert self.heatmap is not None
+        theme = active_theme()
+        fill = qcolor(theme.note_fill)
+        border = qcolor(theme.note_border)
+        selected = qcolor(theme.note_selected)
+        # Hover: same fill hue, a touch brighter/more opaque than the resting note.
+        hover_fill = QColor(fill)
+        hover_fill.setAlpha(min(255, fill.alpha() + 20))
         clip = painter.clipBoundingRect()
         for list_index, note in enumerate(self.notes):
             rect = self._note_rect(note)
@@ -799,14 +814,14 @@ class PianoRollWidget(QWidget):
             is_selected = list_index == self.selected_note_index
             is_hovered = list_index == self.hover_note_index
             if is_selected:
-                painter.setPen(QPen(QColor(255, 226, 88), 2))
-                painter.setBrush(QColor(255, 186, 52, 170))
+                painter.setPen(QPen(selected, 2))
+                painter.setBrush(QColor(selected.red(), selected.green(), selected.blue(), 170))
             elif is_hovered:
-                painter.setPen(QPen(QColor(255, 206, 96), 2))
-                painter.setBrush(QColor(230, 96, 36, 155))
+                painter.setPen(QPen(border, 2))
+                painter.setBrush(hover_fill)
             else:
-                painter.setPen(QPen(QColor(255, 170, 66), 1))
-                painter.setBrush(QColor(210, 72, 34, 135))
+                painter.setPen(QPen(border, 1))
+                painter.setBrush(fill)
             painter.drawRect(rect)
             if is_selected or is_hovered:
                 self._draw_note_handles(painter, rect, active=is_selected)
@@ -824,7 +839,7 @@ class PianoRollWidget(QWidget):
 
         assert self.heatmap is not None
         clip = painter.clipBoundingRect()
-        pen = QPen(QColor(120, 220, 255, 230), 1.6)
+        pen = QPen(qcolor(active_theme().bend_curve), 1.6)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -847,8 +862,11 @@ class PianoRollWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
     def _draw_note_handles(self, painter: QPainter, rect: QRectF, *, active: bool) -> None:
+        theme = active_theme()
         handle_width = min(6.0, max(3.0, rect.width() / 3.0))
-        handle_color = QColor(255, 235, 132, 235) if active else QColor(255, 198, 90, 210)
+        bright = qcolor(theme.note_selected)
+        accent = qcolor(theme.accent)
+        handle_color = QColor(bright.red(), bright.green(), bright.blue(), 235) if active else QColor(accent.red(), accent.green(), accent.blue(), 210)
         outline_color = QColor(55, 26, 10, 230)
         left = QRectF(rect.left(), rect.top(), handle_width, rect.height())
         right = QRectF(rect.right() - handle_width, rect.top(), handle_width, rect.height())
@@ -944,30 +962,36 @@ class PianoRollWidget(QWidget):
         x = int(self.keyboard_width + self.playhead_seconds / self.seconds_per_pixel)
         if x < self.keyboard_width or x > self.width():
             return
-        painter.setPen(QPen(QColor(255, 230, 120), 2))
+        painter.setPen(QPen(qcolor(active_theme().playhead), 2))
         painter.drawLine(x, 0, x, self.height())
 
     # 256-entry color lookup table, built lazily and shared by every instance.
     # Rebuilding a QColor per heatmap cell dominated repaint cost; quantising the
-    # activation to a byte and indexing this list removes that per-cell work.
+    # activation to a byte and indexing this list removes that per-cell work. The
+    # cache is keyed on the active theme id so a theme change rebuilds the ramp.
     _HEAT_LUT: list[QColor] | None = None
+    _HEAT_LUT_THEME: str | None = None
 
     @classmethod
     def _heat_lut(cls) -> list[QColor]:
-        lut = cls._HEAT_LUT
-        if lut is None:
-            lut = [cls._heat_color_exact(i / 255.0) for i in range(256)]
-            cls._HEAT_LUT = lut
-        return lut
+        theme = active_theme()
+        if cls._HEAT_LUT is None or cls._HEAT_LUT_THEME != theme.id:
+            channels = theme.heat.channels()
+            cls._HEAT_LUT = [cls._heat_color_exact(i / 255.0, channels) for i in range(256)]
+            cls._HEAT_LUT_THEME = theme.id
+        return cls._HEAT_LUT
 
     @staticmethod
-    def _heat_color_exact(value: float) -> QColor:
+    def _heat_color_exact(value: float, channels: tuple[tuple[int, int], ...]) -> QColor:
+        """Map a [0, 1] activation to an RGBA QColor via the ramp's (offset, slope) per channel."""
+
         value = max(0.0, min(1.0, value))
+        (r0, rs), (g0, gs), (b0, bs), (a0, as_) = channels
         return QColor(
-            int(45 + 210 * value),
-            int(18 + 150 * value),
-            int(8 + 22 * (1.0 - value)),
-            int(42 + 205 * value),
+            int(r0 + rs * value),
+            int(g0 + gs * value),
+            int(b0 + bs * value),
+            int(a0 + as_ * value),
         )
 
     @classmethod
@@ -978,20 +1002,23 @@ class PianoRollWidget(QWidget):
     # numpy RGBA lookup table (256, 4) in the byte order QImage.Format_ARGB32
     # expects on a little-endian host: B, G, R, A. Built from the same color
     # ramp as the QColor LUT so the blitted heatmap matches the fillRect path.
+    # Also keyed on the active theme id so it rebuilds on a theme change.
     _HEAT_RGBA_LUT: Any = None
+    _HEAT_RGBA_LUT_THEME: str | None = None
 
     @classmethod
     def _heat_rgba_lut(cls) -> Any:
-        lut = cls._HEAT_RGBA_LUT
-        if lut is None:
+        theme = active_theme()
+        if cls._HEAT_RGBA_LUT is None or cls._HEAT_RGBA_LUT_THEME != theme.id:
             import numpy as np  # type: ignore[import-not-found]
 
+            (r0, rs), (g0, gs), (b0, bs), (a0, as_) = theme.heat.channels()
             values = np.arange(256, dtype=np.float32) / 255.0
-            r = (45 + 210 * values).astype(np.uint8)
-            g = (18 + 150 * values).astype(np.uint8)
-            b = (8 + 22 * (1.0 - values)).astype(np.uint8)
-            a = (42 + 205 * values).astype(np.uint8)
+            r = (r0 + rs * values).astype(np.uint8)
+            g = (g0 + gs * values).astype(np.uint8)
+            b = (b0 + bs * values).astype(np.uint8)
+            a = (a0 + as_ * values).astype(np.uint8)
             # ARGB32 stored little-endian is B, G, R, A byte order in memory.
-            lut = np.stack([b, g, r, a], axis=1)
-            cls._HEAT_RGBA_LUT = lut
-        return lut
+            cls._HEAT_RGBA_LUT = np.stack([b, g, r, a], axis=1)
+            cls._HEAT_RGBA_LUT_THEME = theme.id
+        return cls._HEAT_RGBA_LUT

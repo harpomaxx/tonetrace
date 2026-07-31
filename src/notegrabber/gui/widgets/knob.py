@@ -19,19 +19,18 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QConicalGradient, QPainter, QPen, QRadialGradient
 from PySide6.QtWidgets import QWidget
 
+from notegrabber.gui.theme import active_theme, qcolor
+
 # Sweep geometry: the value arc runs from the lower-left to the lower-right,
 # leaving a gap at the bottom like a physical knob's end stops.
 _START_ANGLE_DEG = 225.0  # 7-8 o'clock
 _SWEEP_DEG = 270.0        # up and over to 4-5 o'clock
 
-# Warm ToneTrace accent palette.
+# Neutral "metal" tones for the knob body and background track; these read the
+# same across themes. The accent arc, rim, and pointer come from the theme.
 _ARC_BG = QColor(60, 66, 84)
-_ARC_LOW = QColor(216, 109, 34)   # #d86d22
-_ARC_HIGH = QColor(255, 214, 79)  # #ffd64f
 _BODY_LIGHT = QColor(70, 76, 94)
 _BODY_DARK = QColor(26, 29, 40)
-_RIM = QColor(255, 179, 63)       # #ffb33f
-_POINTER = QColor(255, 226, 120)
 _TICK = QColor(150, 160, 180, 120)
 
 
@@ -169,6 +168,11 @@ class KnobWidget(QWidget):
     # -- painting --------------------------------------------------------------
 
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt API
+        theme = active_theme()
+        arc_low = qcolor(theme.knob_arc_lo)
+        arc_high = qcolor(theme.knob_arc_hi)
+        rim = qcolor(theme.knob_rim)
+        pointer = qcolor(theme.note_selected)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
@@ -191,8 +195,8 @@ class KnobWidget(QWidget):
 
         # Value arc with a warm low->high gradient.
         gradient = QConicalGradient(cx, cy, _START_ANGLE_DEG)
-        gradient.setColorAt(0.0, _ARC_LOW)
-        gradient.setColorAt(0.4, _ARC_HIGH)
+        gradient.setColorAt(0.0, arc_low)
+        gradient.setColorAt(0.4, arc_high)
         value_pen = QPen(gradient, 5.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(value_pen)
         painter.drawArc(arc_rect, start_qt, value_span_qt)
@@ -204,7 +208,7 @@ class KnobWidget(QWidget):
         body.setColorAt(0.0, _BODY_LIGHT)
         body.setColorAt(1.0, _BODY_DARK)
         painter.setBrush(body)
-        painter.setPen(QPen(_RIM, 1.4))
+        painter.setPen(QPen(rim, 1.4))
         painter.drawEllipse(body_rect)
 
         # Pointer from the body edge toward the center at the current angle.
@@ -215,5 +219,5 @@ class KnobWidget(QWidget):
         dy = -math.sin(angle_rad)
         outer = QPointF(cx + dx * body_d * 0.42, cy + dy * body_d * 0.42)
         inner = QPointF(cx + dx * body_d * 0.14, cy + dy * body_d * 0.14)
-        painter.setPen(QPen(_POINTER, 2.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.setPen(QPen(pointer, 2.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawLine(inner, outer)

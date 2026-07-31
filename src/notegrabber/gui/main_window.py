@@ -7,7 +7,7 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QElapsedTimer, QThread, QTimer, Qt, QUrl
+from PySide6.QtCore import QElapsedTimer, QSettings, QThread, QTimer, Qt, QUrl
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
@@ -36,7 +36,7 @@ from .transcription_stats import compute_stats
 from .midi_preview_worker import MidiPreviewRequest, MidiPreviewResult, MidiPreviewWorker, render_midi_preview
 from .overview_worker import OverviewResult, OverviewWorker
 from .state import GuiMidiNote, ProjectState, delete_gui_note, gui_notes_to_midi, retune_notes_from_heatmap, update_gui_note
-from .theme import APP_STYLESHEET, polish_button
+from .theme import THEMES, active_theme, build_stylesheet, polish_button, set_active_theme
 from .widgets.controls import AnalysisControls
 from .widgets.piano_roll import PianoRollWidget
 from .widgets.sequence import SequenceWidget
@@ -137,8 +137,16 @@ class MainWindow(QMainWindow):
         # on commit so a multi-tick drag is a single undo step.
         self._pre_edit_snapshot: list[GuiMidiNote] | None = None
 
+        # Restore the persisted theme (default when unset/unknown) before styling
+        # so the first paint uses it.
+        self._settings = QSettings("tonetrace", "tonetrace")
+        saved_theme = self._settings.value("theme", "default")
+        set_active_theme(saved_theme if saved_theme in THEMES else "default")
+
         self._build_layout()
         self._connect_signals()
+        # Reflect the restored theme in the combo (without re-emitting).
+        self.controls.set_theme(active_theme().id)
         self._apply_style()
         self._install_shortcuts()
 
@@ -299,6 +307,7 @@ class MainWindow(QMainWindow):
         self.controls.overlay_toggled.connect(self.piano_roll.set_show_notes)
         self.controls.heatmap_toggled.connect(self.piano_roll.set_show_heatmap)
         self.controls.pitch_bends_toggled.connect(self.piano_roll.set_show_pitch_bends)
+        self.controls.theme_changed.connect(self._on_theme_changed)
         self.transport.play_both_requested.connect(self._play_both)
         self.transport.play_original_requested.connect(self._play_original)
         self.transport.play_midi_requested.connect(self._play_midi)
@@ -1246,4 +1255,18 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(text)
 
     def _apply_style(self) -> None:
-        self.setStyleSheet(APP_STYLESHEET)
+        self.setStyleSheet(build_stylesheet(active_theme()))
+
+    def _on_theme_changed(self, theme_id: str) -> None:
+        """Switch to ``theme_id``: reskin the chrome, repaint canvases, persist."""
+
+        if theme_id not in THEMES:
+            return
+        set_active_theme(theme_id)
+        self._apply_style()
+        # The painted widgets read colors from the active theme at paint time but
+        # are not rebuilt, so force a repaint of each so the new palette shows.
+        for widget in (self.piano_roll, self.waveform):
+            widget.update()
+        self.controls.update()
+        self._settings.setValue("theme", theme_id)

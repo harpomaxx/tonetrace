@@ -7,6 +7,7 @@ from typing import Iterable
 
 from notegrabber.analyzer import read_wav
 from notegrabber.gui.overview import PitchOverview
+from notegrabber.gui.theme import active_theme, qcolor
 
 from PySide6.QtCore import QRect, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
@@ -288,8 +289,9 @@ class WaveformWidget(QWidget):
             self.unsetCursor()
 
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt API
+        theme = active_theme()
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(16, 19, 28))
+        painter.fillRect(self.rect(), qcolor(theme.waveform_bg))
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
         width = max(1, self.width())
@@ -297,11 +299,11 @@ class WaveformWidget(QWidget):
         overview_height = self._overview_height(height)
         waveform_height = max(1, height - overview_height)
         mid_y = waveform_height / 2
-        painter.setPen(QPen(QColor(55, 65, 90), 1))
+        painter.setPen(QPen(qcolor(theme.key_white), 1))
         painter.drawLine(0, int(mid_y), width, int(mid_y))
 
         if not self.samples:
-            painter.setPen(QColor(150, 160, 180))
+            painter.setPen(qcolor(theme.text_dim))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.empty_message)
             return
 
@@ -313,7 +315,7 @@ class WaveformWidget(QWidget):
         step = max(1, len(self.samples) // max(1, time_width))
         low_env, high_env = self._pixel_envelope(step)
         amplitude = waveform_height * 0.45
-        painter.setPen(QPen(QColor(255, 170, 72), 1))
+        painter.setPen(QPen(qcolor(theme.waveform), 1))
         for x in range(clip_left, clip_right):
             column = x - gutter
             if column < 0 or column >= len(low_env):
@@ -328,7 +330,7 @@ class WaveformWidget(QWidget):
         duration = self.duration_seconds()
         if duration > 0:
             playhead_x = int(self._x_for_seconds(self.playhead_seconds))
-            painter.setPen(QPen(QColor(255, 230, 120), 2))
+            painter.setPen(QPen(qcolor(theme.playhead), 2))
             painter.drawLine(playhead_x, 0, playhead_x, height)
 
     def _pixel_envelope(self, step: int) -> tuple[object, object]:
@@ -387,7 +389,7 @@ class WaveformWidget(QWidget):
         if overview is None or overview_height <= 0 or overview.frame_count <= 0 or overview.band_count <= 0:
             return
         top = height - overview_height
-        painter.fillRect(0, top, width, overview_height, QColor(9, 10, 15))
+        painter.fillRect(0, top, width, overview_height, qcolor(active_theme().canvas_bg))
         clip = painter.clipBoundingRect()
         clip_left = clip.left() if not clip.isEmpty() else 0.0
         clip_right = clip.right() if not clip.isEmpty() else float(width)
@@ -414,13 +416,17 @@ class WaveformWidget(QWidget):
                 activation = max(0.0, min(1.0, activation))
                 y = top + int((band_count - 1 - band_index) * band_height)
                 painter.fillRect(QRectF(x, y, column_width, max(1.0, band_height)), self._overview_color(activation))
-        painter.setPen(QPen(QColor(255, 176, 64, 110), 1))
+        border = qcolor(active_theme().accent)
+        painter.setPen(QPen(QColor(border.red(), border.green(), border.blue(), 110), 1))
         painter.drawLine(0, top, width, top)
 
     @staticmethod
     def _overview_color(value: float) -> QColor:
+        """Map an overview activation to color via the active theme's heat ramp."""
+
         value = max(0.0, min(1.0, value))
-        return QColor(int(55 + 200 * value), int(22 + 135 * value), int(8 + 18 * (1.0 - value)), int(38 + 170 * value))
+        (r0, rs), (g0, gs), (b0, bs), (a0, as_) = active_theme().heat.channels()
+        return QColor(int(r0 + rs * value), int(g0 + gs * value), int(b0 + bs * value), int(a0 + as_ * value))
 
     def _draw_selection(self, painter: QPainter, width: int, height: int) -> None:
         duration = self.duration_seconds()
@@ -429,13 +435,16 @@ class WaveformWidget(QWidget):
         x = int(self._x_for_seconds(self.selection_start_seconds))
         end_x = int(self._x_for_seconds(self.selection_start_seconds + self.selection_duration_seconds))
         selection_width = max(1, end_x - x)
-        painter.fillRect(x, 0, selection_width, height, QColor(255, 126, 24, 55))
-        painter.setPen(QPen(QColor(255, 186, 64), 2))
+        theme = active_theme()
+        accent = qcolor(theme.accent)
+        handle = QColor(accent.red(), accent.green(), accent.blue(), 130)
+        painter.fillRect(x, 0, selection_width, height, qcolor(theme.selection))
+        painter.setPen(QPen(accent, 2))
         painter.drawLine(x, 0, x, height)
         painter.drawLine(end_x, 0, end_x, height)
         handle_width = 7
-        painter.fillRect(x - handle_width // 2, 0, handle_width, height, QColor(255, 186, 64, 130))
-        painter.fillRect(end_x - handle_width // 2, 0, handle_width, height, QColor(255, 186, 64, 130))
+        painter.fillRect(x - handle_width // 2, 0, handle_width, height, handle)
+        painter.fillRect(end_x - handle_width // 2, 0, handle_width, height, handle)
 
 
 def load_waveform_preview(path: Path) -> tuple[list[float], int, float]:
