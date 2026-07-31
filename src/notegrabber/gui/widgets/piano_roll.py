@@ -7,10 +7,21 @@ from dataclasses import replace
 from typing import Any
 
 from PySide6.QtCore import QRect, QSize, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from notegrabber.gui.state import GuiHeatmap, GuiMidiNote
+
+# Chromatic note names, index 0 == C. Combined with the octave (MIDI pitch // 12
+# - 1) this yields labels like "C4", "F#3" -- matching the "C4" octave marks the
+# keyboard already draws.
+_NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+
+
+def _pitch_note_name(pitch: int) -> str:
+    """Return the note name with octave for a MIDI pitch, e.g. 60 -> 'C4'."""
+
+    return f"{_NOTE_NAMES[pitch % 12]}{pitch // 12 - 1}"
 
 
 class PianoRollWidget(QWidget):
@@ -21,6 +32,11 @@ class PianoRollWidget(QWidget):
     note_edited = Signal(int, float, float, int, int, bool)
     zoom_changed = Signal(float)
     vertical_zoom_changed = Signal(float)
+
+    # A sounding key's name is only drawn on the keyboard when the row is tall
+    # enough for legible text; when zoomed out so rows are short it would be
+    # unreadable clutter, so it is hidden (highlight only).
+    _LABEL_MIN_ROW_HEIGHT = 11
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -435,7 +451,12 @@ class PianoRollWidget(QWidget):
         left = self._horizontal_scroll_offset()
         active = self._active_pitches()
         painter.fillRect(left, 0, self.keyboard_width, self.height(), QColor(20, 24, 34))
-        painter.setPen(QColor(190, 200, 220))
+        base_font = painter.font()
+        bold_font = QFont(base_font)
+        bold_font.setBold(True)
+        # Only label a sounding key if the row is tall enough for legible text;
+        # when zoomed out so rows are short, keep the strip clean (highlight only).
+        label_active = self.note_height >= self._LABEL_MIN_ROW_HEIGHT
         for index, pitch in enumerate(reversed(self.heatmap.midi_notes)):
             y = index * self.note_height
             if y > self.height():
@@ -447,8 +468,20 @@ class PianoRollWidget(QWidget):
             else:
                 key_color = QColor(32, 36, 48) if is_black else QColor(52, 57, 70)
             painter.fillRect(left, y, self.keyboard_width, self.note_height, key_color)
-            if pitch % 12 == 0:
-                painter.drawText(left + 4, y + self.note_height - 1, f"C{pitch // 12 - 1}")
+            if pitch in active and label_active:
+                # Name the sounding key on the key itself: bold, dark for contrast
+                # against the warm highlight.
+                painter.setFont(bold_font)
+                painter.setPen(QColor(24, 16, 6))
+                painter.drawText(
+                    QRect(left, y, self.keyboard_width - 3, self.note_height),
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                    _pitch_note_name(pitch),
+                )
+                painter.setFont(base_font)
+            elif pitch % 12 == 0:
+                painter.setPen(QColor(190, 200, 220))
+                painter.drawText(left + 4, y + self.note_height - 1, _pitch_note_name(pitch))
 
     def _draw_heatmap(self, painter: QPainter) -> None:
         assert self.heatmap is not None
