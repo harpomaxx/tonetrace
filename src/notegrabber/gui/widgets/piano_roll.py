@@ -697,8 +697,21 @@ class PianoRollWidget(QWidget):
         painter.setPen(QPen(QColor(255, 230, 120), 2))
         painter.drawLine(x, 0, x, self.height())
 
+    # 256-entry color lookup table, built lazily and shared by every instance.
+    # Rebuilding a QColor per heatmap cell dominated repaint cost; quantising the
+    # activation to a byte and indexing this list removes that per-cell work.
+    _HEAT_LUT: list[QColor] | None = None
+
+    @classmethod
+    def _heat_lut(cls) -> list[QColor]:
+        lut = cls._HEAT_LUT
+        if lut is None:
+            lut = [cls._heat_color_exact(i / 255.0) for i in range(256)]
+            cls._HEAT_LUT = lut
+        return lut
+
     @staticmethod
-    def _heat_color(value: float) -> QColor:
+    def _heat_color_exact(value: float) -> QColor:
         value = max(0.0, min(1.0, value))
         return QColor(
             int(45 + 210 * value),
@@ -706,3 +719,8 @@ class PianoRollWidget(QWidget):
             int(8 + 22 * (1.0 - value)),
             int(42 + 205 * value),
         )
+
+    @classmethod
+    def _heat_color(cls, value: float) -> QColor:
+        index = int(max(0.0, min(1.0, value)) * 255.0)
+        return cls._heat_lut()[index]
