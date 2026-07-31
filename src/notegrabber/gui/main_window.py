@@ -11,6 +11,7 @@ from PySide6.QtCore import QElapsedTimer, QThread, QTimer, Qt, QUrl
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
+    QApplication,
     QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
@@ -27,7 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from notegrabber.analyzer import BackendName
-from notegrabber.midi import write_midi
+from notegrabber.export import EXPORT_FORMATS, export_notes, format_for_path
 
 from .analysis_worker import AnalysisRequest, AnalysisResult, AnalysisWorker
 from .edit_history import EditHistory
@@ -1186,20 +1187,59 @@ class MainWindow(QMainWindow):
     def _export_midi_dialog(self) -> None:
         notes = self.state.current_notes
         if self.state.heatmap is None:
-            QMessageBox.information(self, "No analysis", "Analyze audio before exporting MIDI.")
+            QMessageBox.information(self, "No analysis", "Analyze audio before exporting.")
             return
-        path, _filter = QFileDialog.getSaveFileName(self, "Export MIDI", "analysis.mid", "MIDI files (*.mid *.midi);;All files (*)")
+        # One dialog offering MIDI plus rendered-audio formats. The chosen filter
+        # decides the default extension; the file's own extension wins if the user
+        # types one (so "song.mp3" under the MIDI filter still exports MP3).
+        filters = ";;".join(
+            (
+                "MIDI files (*.mid *.midi)",
+                "WAV audio (*.wav)",
+                "MP3 audio (*.mp3)",
+                "FLAC audio (*.flac)",
+                "OGG audio (*.ogg)",
+                "All files (*)",
+            )
+        )
+        path, selected_filter = QFileDialog.getSaveFileName(self, "Export", "analysis.mid", filters)
         if not path:
             return
-        output = Path(path)
-        if output.suffix.lower() not in {".mid", ".midi"}:
-            output = output.with_suffix(".mid")
+        output = self._resolve_export_path(Path(path), selected_filter)
+        self._run_export(gui_notes_to_midi(notes), output, len(notes))
+
+    @staticmethod
+    def _resolve_export_path(output: Path, selected_filter: str) -> Path:
+        """Give the output path an extension: keep a supported one, else use the filter's."""
+
+        if format_for_path(output) is not None:
+            return output
+        # Map the selected filter to an extension when the user gave none.
+        for ext in ("wav", "mp3", "flac", "ogg", "mid"):
+            if f"*.{ext}" in selected_filter:
+                return output.with_suffix(f".{ext}")
+        return output.with_suffix(".mid")
+
+    def _run_export(self, midi_notes, output: Path, note_count: int) -> None:
+        """Export notes to ``output`` (MIDI or audio), with a busy cursor and status."""
+
+        fmt = format_for_path(output) or "mid"
+        label = EXPORT_FORMATS.get(fmt, fmt.upper())
+        # Audio export synthesizes the whole song, so it can take a moment; show a
+        # busy cursor rather than freezing silently.
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        if fmt != "mid":
+            self._set_status(f"Rendering {label} to {output.name}…")
+            QApplication.processEvents()
         try:
-            write_midi(output, gui_notes_to_midi(notes))
-        except Exception as exc:
-            QMessageBox.critical(self, "Export failed", str(exc))
+            result, error = export_notes(midi_notes, output)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if result is None:
+            QMessageBox.critical(self, "Export failed", error or "Unknown error")
+            self._set_status("Export failed.")
             return
-        self._set_status(f"Exported {len(notes)} notes to {output}")
+        self._set_status(f"Exported {note_count} notes as {label} to {output}")
 
     def _set_status(self, text: str) -> None:
         self.transport.set_status(text)

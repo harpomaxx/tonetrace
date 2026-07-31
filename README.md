@@ -149,7 +149,10 @@ section (handy for long files), pick a backend, and click **Analyze**. Then:
   tempo, and detected key), which updates as you edit.
 - Select, drag, resize, retune, and delete notes; edits re-render the MIDI
   preview.
-- **Export** the edited notes as a Standard MIDI File.
+- **Export** the edited notes as a Standard MIDI File, or as rendered audio
+  (WAV / MP3 / FLAC / OGG). Audio is synthesized with the built-in synth and
+  encoded via `soundfile`; MP3/FLAC/OGG need a libsndfile build with that codec
+  (libsndfile ≥ 1.1 for MP3), otherwise the export reports which format failed.
 
 #### MIDI preview sound
 
