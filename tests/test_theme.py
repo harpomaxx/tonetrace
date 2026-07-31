@@ -16,11 +16,11 @@ pytest.importorskip("PySide6")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
-def test_registry_has_default_and_rebirth():
+def test_registry_has_expected_themes():
     from notegrabber.gui import theme as t
 
-    assert "default" in t.THEMES
-    assert "rebirth" in t.THEMES
+    for theme_id in ("default", "amber", "rebirth"):
+        assert theme_id in t.THEMES
     # Default is first (menu order) and is the initial active theme.
     assert next(iter(t.THEMES)) == "default"
     assert t.active_theme().id == "default"
@@ -54,12 +54,18 @@ def _strip_valid_css(ss: str) -> str:
     return "".join(re.findall(r"\{[a-z_]+\}", ss))
 
 
-def test_rebirth_stylesheet_differs_and_uses_its_accent():
+def test_nondefault_stylesheets_differ_from_default_and_use_their_accent():
     from notegrabber.gui import theme as t
 
-    rb = t.build_stylesheet(t.REBIRTH_THEME)
-    assert rb != t.build_stylesheet(t.DEFAULT_THEME)
-    assert "#f08a1e" in rb  # rebirth amber accent
+    default_ss = t.build_stylesheet(t.DEFAULT_THEME)
+    # Amber uses its amber accent; ReBirth uses its 303-red accent.
+    amber = t.build_stylesheet(t.AMBER_THEME)
+    assert amber != default_ss
+    assert "#f08a1e" in amber  # amber accent
+    rebirth = t.build_stylesheet(t.REBIRTH_THEME)
+    assert rebirth != default_ss
+    assert rebirth != amber
+    assert "#962222" in rebirth  # 303 maroon-red accent
 
 
 def test_set_active_theme_accepts_id_and_object():

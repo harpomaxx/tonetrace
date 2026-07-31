@@ -115,6 +115,16 @@ class Theme:
     # and get build_stylesheet's role-interpolated template instead.
     stylesheet: str | None = None
 
+    # Text drawn over colored fills (primary/danger buttons, the accent slider).
+    # Needs contrast against the accent, not against the panel -- important for a
+    # light chrome where the plain text color is dark. Defaults to a near-white.
+    text_on_accent: RGB | None = None
+
+    # Background for small LCD-style readouts (transport status, stats strip,
+    # knob value). On a light chrome these should stay dark like a real LED
+    # display so the amber/green lcd text reads. Defaults to bg_deep.
+    readout_bg: RGB | None = None
+
 
 # The original, hand-tuned default chrome stylesheet, kept verbatim so the
 # default theme's window looks exactly as before. New themes are generated from
@@ -505,8 +515,54 @@ DEFAULT_THEME = Theme(
 REBIRTH_THEME = Theme(
     id="rebirth",
     name="ReBirth RB-338",
-    # Warm brushed-graphite panels with a brown/tan tint, clearly distinct from
-    # the default's cool blue. Amber-orange 303 accent and a red 909 danger.
+    # The real RB-338 is a cold brushed-aluminium rack unit: silver metal panels
+    # with dark engraved text, the TB-303's muted maroon-red bodies, black LCD
+    # areas, amber step LEDs, and small green status lamps. So the chrome is a
+    # *light* silver skin (dark text on grey metal) with a red accent, while the
+    # piano-roll/waveform canvases stay black like the unit's displays.
+    bg=(168, 170, 172),        # brushed aluminium panel
+    bg_deep=(120, 122, 124),   # status bar / recessed metal
+    panel_hi=(214, 216, 218),  # raised metal (gradient top)
+    panel_lo=(150, 152, 155),  # metal shadow (gradient bottom)
+    text=(28, 28, 30),         # dark engraved lettering
+    text_dim=(78, 78, 82),     # secondary engraving
+    border=(96, 98, 100),      # panel seams / screw lines
+    accent=(150, 34, 34),      # TB-303 maroon red
+    accent_hi=(196, 60, 52),   # brighter red (hover/focus)
+    accent_deep=(84, 18, 18),  # deep red (pressed / primary base)
+    danger=(120, 24, 24),      # darker red for destructive actions
+    input_bg=(226, 227, 228),  # inset light readout field
+    lcd=(224, 128, 26),        # amber LED value readouts
+    # Canvases are the unit's black displays with amber LEDs.
+    canvas_bg=(14, 13, 12, 255),
+    keyboard_bg=(30, 28, 26, 255),
+    key_white=(64, 60, 56, 255),
+    key_black=(34, 32, 30, 255),
+    key_active=(232, 138, 26, 255),   # amber step LED
+    grid=(255, 200, 120, 30),
+    note_fill=(150, 34, 34, 170),     # 303-red notes
+    note_border=(232, 138, 26, 255),  # amber outline
+    note_selected=(255, 196, 70, 255),
+    playhead=(232, 138, 26, 255),     # amber
+    bend_curve=(120, 220, 255, 230),
+    heat=HeatRamp(lo=(30, 16, 12, 42), hi=(255, 150, 26, 247)),  # black -> amber
+    waveform=(232, 138, 26, 255),     # amber trace
+    waveform_bg=(16, 15, 14, 255),
+    selection=(232, 138, 26, 60),
+    knob_arc_lo=(150, 34, 34, 255),   # red -> amber sweep
+    knob_arc_hi=(232, 138, 26, 255),
+    knob_rim=(60, 58, 56, 255),       # dark metal rim
+    text_on_accent=(246, 236, 224),   # light text on the maroon buttons
+    readout_bg=(16, 14, 12),          # black LED-display panel for lcd readouts
+)
+
+
+# Amber Rack: a warm brushed-graphite hardware skin (dark panels with a
+# brown/tan tint, amber-orange accent, green LCD readouts). Not the literal
+# RB-338 -- a warm dark synth-rack look in its own right.
+AMBER_THEME = Theme(
+    id="amber",
+    name="Amber Rack",
     bg=(30, 27, 23),
     bg_deep=(19, 16, 13),
     panel_hi=(74, 66, 55),
@@ -543,7 +599,7 @@ REBIRTH_THEME = Theme(
 
 # Registry of shippable themes, keyed by id. Insertion order is the menu order;
 # the default comes first.
-THEMES: dict[str, Theme] = {t.id: t for t in (DEFAULT_THEME, REBIRTH_THEME)}
+THEMES: dict[str, Theme] = {t.id: t for t in (DEFAULT_THEME, AMBER_THEME, REBIRTH_THEME)}
 
 
 # Process-global active theme so the painted widgets (which are not rebuilt on a
@@ -609,6 +665,10 @@ def build_stylesheet(theme: Theme) -> str:
         "danger": _hex(theme.danger),
         "input_bg": _hex(theme.input_bg),
         "lcd": _hex(theme.lcd),
+        # Contrast-preserving fallbacks: light text over colored fills, and a
+        # dark background for LED-style readouts.
+        "text_on_accent": _hex(theme.text_on_accent or (246, 244, 240)),
+        "readout_bg": _hex(theme.readout_bg or theme.bg_deep),
     }
     return _STYLESHEET_TEMPLATE.format(**c)
 
@@ -661,9 +721,7 @@ QLabel#transportStatus {{
     color: {lcd};
     font-size: 13px;
     font-weight: 800;
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 {panel_hi},
-        stop:1 {panel_lo});
+    background: {readout_bg};
     border: 1px solid {accent_deep};
     border-left: 4px solid {accent};
     border-radius: 7px;
@@ -720,7 +778,7 @@ QLabel#statsStrip {{
     color: {lcd};
     font-weight: 700;
     letter-spacing: 0.3px;
-    background: {panel_lo};
+    background: {readout_bg};
     border: 1px solid {border};
     border-radius: 7px;
     padding: 6px 12px;
@@ -779,7 +837,7 @@ QPushButton[role="primary"], QToolButton[role="primary"] {{
         stop:0 {accent},
         stop:0.55 {accent_deep},
         stop:1 {accent_deep});
-    color: {text};
+    color: {text_on_accent};
 }}
 QPushButton[role="primary"]:hover:!disabled, QToolButton[role="primary"]:hover:!disabled {{
     border-color: {accent_hi};

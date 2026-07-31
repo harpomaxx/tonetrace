@@ -154,7 +154,9 @@ section (handy for long files), pick a backend, and click **Analyze**. Then:
   encoded via `soundfile`; MP3/FLAC/OGG need a libsndfile build with that codec
   (libsndfile ≥ 1.1 for MP3), otherwise the export reports which format failed.
 - **Switch themes** from **Appearance → Theme** in the left panel. The default
-  *Midnight* look ships alongside a *ReBirth RB-338* theme; the choice reskins
+  *Midnight* look ships alongside *Amber Rack* (a warm dark synth-rack skin) and
+  *ReBirth RB-338* (silver brushed-metal chrome with the TB-303's maroon red and
+  amber LED displays, after the 1996 Propellerhead program). The choice reskins
   the whole app (chrome, knobs, waveform, heatmap, notes) and is remembered
   across launches. New themes are added by registering a palette in
   `gui/theme.py`.
