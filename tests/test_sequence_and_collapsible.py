@@ -51,6 +51,61 @@ def test_empty_state_shown_until_notes_then_table():
     assert seq._stack.currentIndex() == 0  # back to empty state
 
 
+def test_unchanged_rows_keep_their_items_on_edit():
+    """Editing one note must not recreate the QTableWidgetItems of other rows
+    (issue #28: update incrementally instead of a full rebuild)."""
+
+    from dataclasses import replace
+
+    from PySide6.QtWidgets import QApplication
+
+    from notegrabber.gui.widgets.sequence import SequenceWidget
+
+    QApplication.instance() or QApplication([])
+    seq = SequenceWidget()
+    notes = _notes()  # rows: [C4+E4 @0.0], [G4 @0.5]
+    seq.set_notes(notes)
+
+    # Capture the item objects of the untouched first (chord) row.
+    row0_items_before = [seq.table.item(0, c) for c in range(seq.table.columnCount())]
+
+    # Edit only the second row's note (raise G4's velocity).
+    edited = [notes[0], notes[1], replace(notes[2], velocity=120)]
+    seq.set_notes(edited)
+
+    # First row's cells are the exact same item objects (not recreated)...
+    row0_items_after = [seq.table.item(0, c) for c in range(seq.table.columnCount())]
+    assert row0_items_after == row0_items_before
+    # ...while the changed row reflects the new velocity.
+    assert seq.table.item(1, 3).text() == "120"
+
+
+def test_identical_reset_changes_no_cells():
+    """Re-setting the identical note list rewrites no cell text but still reports
+    the count (a common no-op path on the edit-commit flow)."""
+
+    from PySide6.QtWidgets import QApplication
+
+    from notegrabber.gui.widgets.sequence import SequenceWidget
+
+    QApplication.instance() or QApplication([])
+    seq = SequenceWidget()
+    notes = _notes()
+    seq.set_notes(notes)
+
+    items_before = [seq.table.item(r, c) for r in range(seq.table.rowCount()) for c in range(seq.table.columnCount())]
+    texts_before = [item.text() for item in items_before]
+
+    counts: list[int] = []
+    seq.count_changed.connect(counts.append)
+    seq.set_notes(list(notes))  # same content, fresh list
+
+    items_after = [seq.table.item(r, c) for r in range(seq.table.rowCount()) for c in range(seq.table.columnCount())]
+    assert items_after == items_before  # no item was recreated
+    assert [item.text() for item in items_after] == texts_before
+    assert counts == [2]  # count still emitted
+
+
 def test_count_changed_signal_reports_chord_rows():
     from PySide6.QtWidgets import QApplication
 
