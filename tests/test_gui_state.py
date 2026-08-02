@@ -226,3 +226,69 @@ def test_retune_notes_from_heatmap_extracts_gui_notes() -> None:
     assert notes[0].source == "cqt"
     assert notes[0].start_seconds == pytest.approx(0.0)
     assert notes[0].duration_seconds == pytest.approx(0.02, abs=0.001)
+
+
+def _random_heatmap(frames: int, notes: int, seed: int) -> GuiHeatmap:
+    import random
+
+    rng = random.Random(seed)
+    activations = [[round(rng.random(), 4) for _ in range(notes)] for _ in range(frames)]
+    return GuiHeatmap(
+        backend="cqt",
+        midi_notes=list(range(21, 21 + notes)),
+        frame_times=[i * 0.05 for i in range(frames)],
+        activations=activations,
+        sample_rate=100,
+        hop_size=5,
+        window_size=1,
+    )
+
+
+@pytest.mark.gui
+@pytest.mark.parametrize("seed", [1, 2, 3])
+@pytest.mark.parametrize("threshold,min_duration", [(0.3, 0.0), (0.5, 0.05), (0.7, 0.1)])
+def test_vectorized_retune_matches_pure_python(seed, threshold, min_duration) -> None:
+    """The numpy retune path must produce notes identical to the document path
+    (issue #22: vectorize extraction, keep the pure-Python fallback)."""
+
+    from notegrabber.analyzer import notes_from_heatmap
+    from notegrabber.gui.state import midi_notes_to_gui
+
+    heatmap = _random_heatmap(frames=120, notes=88, seed=seed)
+
+    vectorized = retune_notes_from_heatmap(heatmap, threshold=threshold, min_duration_seconds=min_duration)
+    document = heatmap_to_document(heatmap)
+    pure = midi_notes_to_gui(
+        notes_from_heatmap(document, threshold=threshold, min_duration_seconds=min_duration),
+        source="cqt",
+    )
+
+    assert len(vectorized) == len(pure)
+    for a, b in zip(vectorized, pure):
+        assert (a.pitch, a.start_seconds, a.duration_seconds, a.velocity) == (
+            b.pitch,
+            b.start_seconds,
+            b.duration_seconds,
+            b.velocity,
+        )
+
+
+@pytest.mark.gui
+def test_retune_falls_back_when_numpy_matrix_unavailable(monkeypatch) -> None:
+    """When activation_matrix() returns None (no numpy), retune still works via
+    the pure-Python document path and yields the same notes."""
+
+    heatmap = _random_heatmap(frames=60, notes=88, seed=7)
+    reference = retune_notes_from_heatmap(heatmap, threshold=0.5, min_duration_seconds=0.05)
+
+    monkeypatch.setattr(type(heatmap), "activation_matrix", lambda self: None)
+    fallback = retune_notes_from_heatmap(heatmap, threshold=0.5, min_duration_seconds=0.05)
+
+    assert len(fallback) == len(reference)
+    for a, b in zip(fallback, reference):
+        assert (a.pitch, a.start_seconds, a.duration_seconds, a.velocity) == (
+            b.pitch,
+            b.start_seconds,
+            b.duration_seconds,
+            b.velocity,
+        )
