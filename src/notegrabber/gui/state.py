@@ -7,6 +7,7 @@ can be tested in headless environments and reused by future non-Qt frontends.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from notegrabber.analyzer import (
     BASIC_PITCH_MIN_DURATION_SECONDS,
     BASIC_PITCH_ONSET_THRESHOLD,
     CQT_THRESHOLD,
+    MIN_NOTE_FRAMES,
     BackendName,
     notes_from_heatmap,
 )
@@ -277,8 +279,82 @@ def retune_notes_from_heatmap(
     threshold: float,
     min_duration_seconds: float,
 ) -> list[GuiMidiNote]:
-    """Extract tuned notes from a GUI heatmap without rerunning analysis."""
+    """Extract tuned notes from a GUI heatmap without rerunning analysis.
 
-    document = heatmap_to_document(heatmap)
-    notes = notes_from_heatmap(document, threshold=threshold, min_duration_seconds=min_duration_seconds)
+    Runs on the GUI thread on every retune-knob commit, so it uses a vectorized
+    numpy pass over the cached activation matrix (~1.3s -> ~0.07s at 3-min
+    scale). Falls back to the pure-Python document path when numpy is missing.
+    """
+
+    matrix = heatmap.activation_matrix()
+    if matrix is not None:
+        notes = _notes_from_matrix(
+            matrix,
+            midi_notes=heatmap.midi_notes,
+            sample_rate=heatmap.sample_rate,
+            hop_size=heatmap.hop_size,
+            threshold=threshold,
+            min_duration_seconds=min_duration_seconds,
+        )
+    else:  # pragma: no cover - exercised only without numpy
+        document = heatmap_to_document(heatmap)
+        notes = notes_from_heatmap(document, threshold=threshold, min_duration_seconds=min_duration_seconds)
     return midi_notes_to_gui(notes, source=heatmap.backend)
+
+
+def _notes_from_matrix(
+    matrix: Any,
+    *,
+    midi_notes: list[int],
+    sample_rate: int,
+    hop_size: int,
+    threshold: float,
+    min_duration_seconds: float,
+) -> list[MidiNote]:
+    """Vectorized equivalent of ``notes_from_heatmap`` over a (frame, note) matrix.
+
+    Matches the pure-Python extraction exactly: a frame is active for a note when
+    its activation is >= ``threshold`` and a local peak across the note dimension
+    (>= its lower and upper pitch neighbours, out-of-range neighbours treated as
+    -1). Contiguous active runs per note become notes; runs shorter than
+    ``min_note_frames`` are dropped; velocity comes from the run's peak.
+    """
+
+    import numpy as np
+
+    frame_count, note_count = matrix.shape
+    if frame_count == 0 or note_count == 0:
+        return []
+
+    hop_seconds = hop_size / sample_rate
+    seconds_per_tick = 1.0 / TICKS_PER_SECOND
+    min_note_frames = max(MIN_NOTE_FRAMES, math.ceil(min_duration_seconds / hop_seconds))
+
+    # Local peak across the note (column) dimension, out-of-range neighbours = -1.
+    left = np.full_like(matrix, -1.0)
+    left[:, 1:] = matrix[:, :-1]
+    right = np.full_like(matrix, -1.0)
+    right[:, :-1] = matrix[:, 1:]
+    active = (matrix >= threshold) & (matrix >= left) & (matrix >= right)
+
+    notes: list[MidiNote] = []
+    # Pad each note column with a False frame at both ends so diff catches runs
+    # that touch frame 0 or the last frame; +1 = onset, -1 = offset.
+    padded = np.zeros((frame_count + 2, note_count), dtype=bool)
+    padded[1:-1] = active
+    edges = padded[1:].astype(np.int8) - padded[:-1].astype(np.int8)
+
+    for note_index, pitch in enumerate(midi_notes):
+        column_edges = edges[:, note_index]
+        starts = np.flatnonzero(column_edges == 1)
+        ends = np.flatnonzero(column_edges == -1)
+        for start_frame, end_frame in zip(starts.tolist(), ends.tolist()):
+            if end_frame - start_frame < min_note_frames:
+                continue
+            peak = float(matrix[start_frame:end_frame, note_index].max())
+            start_tick = round(start_frame * hop_seconds / seconds_per_tick)
+            duration_ticks = max(1, round((end_frame - start_frame) * hop_seconds / seconds_per_tick))
+            velocity = max(1, min(127, round(peak * 127)))
+            notes.append(MidiNote(pitch=pitch, start_tick=start_tick, duration_ticks=duration_ticks, velocity=velocity))
+
+    return sorted(notes, key=lambda note: (note.start_tick, note.pitch))
