@@ -23,7 +23,7 @@ from notegrabber.analyzer import (
     BASIC_PITCH_ONSET_THRESHOLD,
     CQT_THRESHOLD,
 )
-from notegrabber.gui.theme import polish_button
+from notegrabber.gui.theme import THEMES, active_theme, polish_button
 from notegrabber.gui.widgets.knob import KnobWidget
 
 NOTE_SENSITIVITY_HELP = (
@@ -55,6 +55,7 @@ class AnalysisControls(QWidget):
     overlay_toggled = Signal(bool)
     heatmap_toggled = Signal(bool)
     pitch_bends_toggled = Signal(bool)
+    theme_changed = Signal(str)  # emits the selected theme id
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -101,6 +102,7 @@ class AnalysisControls(QWidget):
         brand = QLabel("TONETRACE")
         brand.setObjectName("brandLabel")
         layout.addWidget(brand)
+        layout.addWidget(self._build_appearance_group())
         layout.addWidget(self._build_transcription_group())
         layout.addWidget(self._build_range_group())
         # The primary workflow buttons (Open/Analyze/Delete/Export) live in a
@@ -120,6 +122,9 @@ class AnalysisControls(QWidget):
         # mirror the set_show_notes wiring on the piano roll.
         self.notes_only.toggled.connect(lambda checked: self.heatmap_toggled.emit(not checked))
         self.show_pitch_bends.toggled.connect(self.pitch_bends_toggled.emit)
+        self.theme_combo.currentIndexChanged.connect(
+            lambda _index: self.theme_changed.emit(self.theme_combo.currentData())
+        )
         # Retune only when a knob change is committed (drag release / wheel /
         # key), not on every intermediate value, so dragging a knob does not
         # re-extract notes and repaint dozens of times per second. Value labels
@@ -195,6 +200,30 @@ class AnalysisControls(QWidget):
         row.addWidget(self.delete_button)
         row.addWidget(self.export_button)
         return group
+
+    def _build_appearance_group(self) -> QGroupBox:
+        group = QGroupBox("Appearance")
+        group.setProperty("panel", "muted")
+        form = QFormLayout(group)
+        form.setVerticalSpacing(8)
+        self.theme_combo = QComboBox()
+        for theme in THEMES.values():
+            self.theme_combo.addItem(theme.name, theme.id)
+        # Reflect the active theme without emitting (blockSignals in set_theme).
+        self.set_theme(active_theme().id)
+        self.theme_combo.setToolTip("Switch the app color theme. New themes can be added in gui/theme.py.")
+        form.addRow("Theme", self.theme_combo)
+        return group
+
+    def set_theme(self, theme_id: str) -> None:
+        """Select ``theme_id`` in the combo without emitting theme_changed."""
+
+        index = self.theme_combo.findData(theme_id)
+        if index < 0:
+            return
+        blocked = self.theme_combo.blockSignals(True)
+        self.theme_combo.setCurrentIndex(index)
+        self.theme_combo.blockSignals(blocked)
 
     def _build_range_group(self) -> QGroupBox:
         group = QGroupBox("Analysis range")
