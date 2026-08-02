@@ -113,7 +113,7 @@ def test_worker_removes_work_dir_when_analysis_fails(tmp_path, monkeypatch):
         raise RuntimeError("analysis exploded")
 
     monkeypatch.setattr(worker_module.tempfile, "mkdtemp", tracking_mkdtemp)
-    monkeypatch.setattr(worker_module, "analyze_wav_to_midi", boom)
+    monkeypatch.setattr(worker_module, "analyze_wav_to_midi_with_heatmap", boom)
 
     request = AnalysisRequest(
         audio_path=tmp_path / "song.wav",
