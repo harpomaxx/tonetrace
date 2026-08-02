@@ -31,17 +31,16 @@ from notegrabber.analyzer import BackendName
 from notegrabber.export import EXPORT_FORMATS, export_notes, format_for_path
 
 from .analysis_worker import AnalysisRequest, AnalysisResult, AnalysisWorker
+from .audio_load_worker import AudioLoadWorker, OverviewReady, WaveformReady
 from .edit_history import EditHistory
 from .transcription_stats import compute_stats
 from .midi_preview_worker import MidiPreviewRequest, MidiPreviewResult, MidiPreviewWorker, render_midi_preview
-from .overview_worker import OverviewResult, OverviewWorker
 from .state import GuiMidiNote, ProjectState, delete_gui_note, gui_notes_to_midi, normalized_gui_note, retune_notes_from_heatmap
 from .theme import THEMES, active_theme, build_stylesheet, polish_button, set_active_theme
 from .widgets.collapsible import CollapsibleSection
 from .widgets.controls import AnalysisControls
 from .widgets.piano_roll import PianoRollWidget
 from .widgets.sequence import SequenceWidget
-from .waveform_worker import WaveformResult, WaveformWorker
 from .widgets.transport import TransportWidget
 from .widgets.waveform import WaveformWidget
 
@@ -72,8 +71,9 @@ class MainWindow(QMainWindow):
         self.render_midi = render_midi
         self.analysis_thread: QThread | None = None
         self.analysis_worker: AnalysisWorker | None = None
-        self.waveform_runs: list[tuple[QThread, WaveformWorker]] = []
-        self.overview_runs: list[tuple[QThread, OverviewWorker]] = []
+        # One decode-once job per open feeds both the waveform preview and the
+        # overview (issue #33). Tracked so closeEvent can drain in-flight loads.
+        self.audio_load_runs: list[tuple[QThread, AudioLoadWorker]] = []
         self.selected_note_index: int | None = None
         self.playback_mode = "stopped"
         self.playback_timer = QTimer(self)
@@ -203,8 +203,7 @@ class MainWindow(QMainWindow):
         self.original_player.setSource(QUrl.fromLocalFile(str(path)))
         self.midi_player.setSource(QUrl())
         self.waveform.set_message("Loading waveform preview…")
-        self._start_waveform_load(path)
-        self._start_overview_load(path)
+        self._start_audio_load(path)
         self._set_status("Audio loaded. Loading waveform and overview in background…")
         self.transport.set_playback_available(original=True, midi=False)
 
@@ -400,51 +399,24 @@ class MainWindow(QMainWindow):
         if path:
             self.load_audio(Path(path))
 
-    def _start_overview_load(self, path: Path) -> None:
+    def _start_audio_load(self, path: Path) -> None:
+        """Decode the file once and feed both the waveform preview and overview."""
+
         thread = QThread(self)
-        worker = OverviewWorker(path)
-        self.overview_runs.append((thread, worker))
+        worker = AudioLoadWorker(path)
+        self.audio_load_runs.append((thread, worker))
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._set_status)
-        worker.finished.connect(self._overview_finished)
-        worker.failed.connect(self._overview_failed)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(lambda thread=thread, worker=worker: self._overview_thread_finished(thread, worker))
+        worker.waveform_ready.connect(self._waveform_ready)
+        worker.overview_ready.connect(self._overview_ready)
+        worker.failed.connect(self._audio_load_failed)
+        # Quit the thread only after run() has produced both payloads.
+        worker.done.connect(thread.quit)
+        thread.finished.connect(lambda thread=thread, worker=worker: self._audio_load_thread_finished(thread, worker))
         thread.start()
 
-    def _overview_finished(self, result: OverviewResult) -> None:
-        if self.state.audio_path != result.audio_path:
-            return
-        self.waveform.set_pitch_overview(result.overview)
-        self._set_status("Low-resolution pitch overview ready. Drag waveform to choose a range, then Analyze.")
-
-    def _overview_failed(self, audio_path: Path, message: str) -> None:
-        if self.state.audio_path != audio_path:
-            return
-        self.waveform.set_pitch_overview(None)
-        self._set_status(f"Pitch overview unavailable: {message}")
-
-    def _overview_thread_finished(self, thread: QThread, worker: OverviewWorker) -> None:
-        self.overview_runs = [(run_thread, run_worker) for run_thread, run_worker in self.overview_runs if run_thread is not thread]
-        worker.deleteLater()
-        thread.deleteLater()
-
-    def _start_waveform_load(self, path: Path) -> None:
-        thread = QThread(self)
-        worker = WaveformWorker(path)
-        self.waveform_runs.append((thread, worker))
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(self._waveform_finished)
-        worker.failed.connect(self._waveform_failed)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(lambda thread=thread, worker=worker: self._waveform_thread_finished(thread, worker))
-        thread.start()
-
-    def _waveform_finished(self, result: WaveformResult) -> None:
+    def _waveform_ready(self, result: WaveformReady) -> None:
         if self.state.audio_path != result.audio_path:
             return
         self.waveform.set_preview(
@@ -456,14 +428,24 @@ class MainWindow(QMainWindow):
         if not self._maybe_enable_default_range_for_long_audio(result.duration_seconds):
             self._set_status("Waveform preview ready. Drag to choose a range or click Analyze.")
 
-    def _waveform_failed(self, audio_path: Path, message: str) -> None:
+    def _overview_ready(self, result: OverviewReady) -> None:
+        if self.state.audio_path != result.audio_path:
+            return
+        self.waveform.set_pitch_overview(result.overview)
+        self._set_status("Low-resolution pitch overview ready. Drag waveform to choose a range, then Analyze.")
+
+    def _audio_load_failed(self, audio_path: Path, stage: str, message: str) -> None:
         if self.state.audio_path != audio_path:
             return
-        self.waveform.set_message("Waveform preview unavailable")
-        self._set_status(f"Audio loaded, but waveform preview failed: {message}")
+        if stage == "waveform":
+            self.waveform.set_message("Waveform preview unavailable")
+            self._set_status(f"Audio loaded, but waveform preview failed: {message}")
+        else:
+            self.waveform.set_pitch_overview(None)
+            self._set_status(f"Pitch overview unavailable: {message}")
 
-    def _waveform_thread_finished(self, thread: QThread, worker: WaveformWorker) -> None:
-        self.waveform_runs = [(run_thread, run_worker) for run_thread, run_worker in self.waveform_runs if run_thread is not thread]
+    def _audio_load_thread_finished(self, thread: QThread, worker: AudioLoadWorker) -> None:
+        self.audio_load_runs = [(run_thread, run_worker) for run_thread, run_worker in self.audio_load_runs if run_thread is not thread]
         worker.deleteLater()
         thread.deleteLater()
 
@@ -583,7 +565,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
         self.preview_debounce_timer.stop()
-        for thread, _worker in list(self.preview_runs):
+        for thread, _worker in list(self.preview_runs) + list(self.audio_load_runs):
             thread.quit()
             thread.wait(2000)
         # Release the WAV the midi player holds (an analysis or edit-preview
