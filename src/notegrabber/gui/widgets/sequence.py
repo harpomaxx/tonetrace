@@ -34,6 +34,10 @@ class SequenceWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.row_starts: list[float] = []
+        # The cell text currently shown per row, so set_notes can update only the
+        # rows that actually changed instead of destroying and recreating every
+        # QTableWidgetItem on each committed edit.
+        self._row_values: list[tuple[str, str, str, str]] = []
 
         caption = QLabel(
             "Transcribed notes, grouped into chords by start time · click a row to jump the playhead"
@@ -68,22 +72,48 @@ class SequenceWidget(QWidget):
         layout.addWidget(self._stack, 1)
 
     def set_notes(self, notes: list[GuiMidiNote]) -> None:
-        """Group notes by approximate onset and display them (or the empty state)."""
+        """Group notes by approximate onset and display them (or the empty state).
+
+        Updates incrementally: rows are diffed against what is already shown and
+        only changed cells are rewritten (reusing existing items), so a single
+        committed edit no longer rebuilds every QTableWidgetItem.
+        """
 
         rows = group_notes_by_onset(notes)
-        self.row_starts = []
-        self.table.setRowCount(len(rows))
-        for row_index, group in enumerate(rows):
+        new_starts: list[float] = []
+        new_values: list[tuple[str, str, str, str]] = []
+        for group in rows:
             start = min(note.start_seconds for note in group)
-            self.row_starts.append(start)
+            new_starts.append(start)
             duration = max(note.end_seconds for note in group) - start
             ordered = sorted(group, key=lambda note: note.pitch)
             pitches = " ".join(note_name(note.pitch) for note in ordered)
             velocities = ", ".join(str(note.velocity) for note in ordered)
-            values = [f"{start:.3f}", pitches, f"{duration:.3f}", velocities]
+            new_values.append((f"{start:.3f}", pitches, f"{duration:.3f}", velocities))
+
+        row_count_changed = len(new_values) != len(self._row_values)
+        if row_count_changed:
+            self.table.setRowCount(len(new_values))
+
+        any_cell_changed = row_count_changed
+        for row_index, values in enumerate(new_values):
+            old = self._row_values[row_index] if row_index < len(self._row_values) else None
             for column, value in enumerate(values):
-                self.table.setItem(row_index, column, QTableWidgetItem(value))
-        self.table.resizeColumnsToContents()
+                if old is not None and old[column] == value:
+                    continue  # unchanged cell: leave its existing item untouched
+                any_cell_changed = True
+                item = self.table.item(row_index, column)
+                if item is None:
+                    self.table.setItem(row_index, column, QTableWidgetItem(value))
+                else:
+                    item.setText(value)
+
+        self.row_starts = new_starts
+        self._row_values = new_values
+        # Column widths only need recomputing when content actually changed;
+        # re-setting the identical note list (a common no-op) now costs nothing.
+        if any_cell_changed:
+            self.table.resizeColumnsToContents()
         self._stack.setCurrentIndex(1 if rows else 0)
         self.count_changed.emit(len(rows))
 
