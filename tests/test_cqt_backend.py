@@ -88,3 +88,40 @@ def test_cqt_backend_a4_heatmap_peak_and_midi_note_are_69(tmp_path: Path) -> Non
     assert intervals
     longest_duration = max(interval.duration_seconds for interval in intervals)
     assert longest_duration == pytest.approx(0.8, abs=0.25)
+
+
+@pytest.mark.cqt
+def test_cqt_compact_builder_preserves_python_six_decimal_rounding(monkeypatch, tmp_path: Path) -> None:
+    import librosa
+    import numpy as np
+
+    from notegrabber.analyzer import build_cqt_heatmap_data
+    from notegrabber.heatmap import heatmap_to_document, notes_from_heatmap_data
+
+    cqt = np.zeros((88, 1), dtype=np.complex64)
+    target_index = 5
+    cqt[target_index, 0] = np.float32(0.6545714736)
+    cqt[10, 0] = 1.0  # normalization reference, away from target neighbours
+
+    monkeypatch.setattr(librosa, "load", lambda *_args, **_kwargs: (np.zeros(1024, dtype=np.float32), 22050))
+    monkeypatch.setattr(librosa, "cqt", lambda *_args, **_kwargs: cqt)
+
+    heatmap = build_cqt_heatmap_data(tmp_path / "synthetic.wav")
+    document = heatmap_to_document(heatmap)
+
+    assert document["frames"][0]["activations"][target_index] == 0.654571
+    below_boundary = notes_from_heatmap_data(
+        heatmap,
+        threshold=0.654571,
+        min_duration_seconds=0.0,
+        min_note_frames=1,
+    )
+    above_boundary = notes_from_heatmap_data(
+        heatmap,
+        threshold=0.654572,
+        min_duration_seconds=0.0,
+        min_note_frames=1,
+    )
+    target_pitch = EXPECTED_MIDI_NOTES[target_index]
+    assert target_pitch in {note.pitch for note in below_boundary}
+    assert target_pitch not in {note.pitch for note in above_boundary}

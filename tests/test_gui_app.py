@@ -1090,7 +1090,7 @@ def test_heatmap_numpy_and_fallback_paths_draw_equivalently_offscreen() -> None:
         widget.set_data(heatmap, [], full_duration_seconds=heatmap.duration_seconds)
         widget.set_horizontal_zoom(zoom)
         if force_fallback:
-            object.__setattr__(heatmap, "_activation_matrix", None)
+            object.__setattr__(heatmap, "activation_matrix", lambda: None)
         image = QImage(widget.width(), widget.height(), QImage.Format.Format_ARGB32)
         image.fill(0)
         widget.render(image)

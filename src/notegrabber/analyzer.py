@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import math
 import struct
@@ -12,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from .heatmap import HeatmapData, heatmap_to_document, notes_from_heatmap_data, write_heatmap_json
 from .midi import MidiNote, TICKS_PER_SECOND, write_midi
 
 MIN_MIDI_NOTE = 21
@@ -186,11 +186,12 @@ def analyze_wav_to_midi(
     """Analyze a WAV file and write detected notes to a MIDI file.
 
     Writes the heatmap JSON only when ``heatmap_path`` is given (the CLI path).
-    Callers that want the heatmap in memory should use
-    :func:`analyze_wav_to_midi_with_heatmap` and avoid the JSON round-trip.
+    Runtime callers that want compact heatmap storage should use
+    :func:`analyze_wav_to_midi_with_heatmap_data`; the document-returning
+    :func:`analyze_wav_to_midi_with_heatmap` remains as a compatibility adapter.
     """
 
-    notes, heatmap = analyze_wav_to_midi_with_heatmap(
+    notes, heatmap = analyze_wav_to_midi_with_heatmap_data(
         input_wav,
         output_midi,
         backend=backend,
@@ -204,7 +205,7 @@ def analyze_wav_to_midi(
     return notes
 
 
-def analyze_wav_to_midi_with_heatmap(
+def analyze_wav_to_midi_with_heatmap_data(
     input_wav: Path,
     output_midi: Path,
     backend: BackendName = "simple",
@@ -212,28 +213,28 @@ def analyze_wav_to_midi_with_heatmap(
     onset_threshold: float = BASIC_PITCH_ONSET_THRESHOLD,
     frame_threshold: float = BASIC_PITCH_FRAME_THRESHOLD,
     min_duration_seconds: float = BASIC_PITCH_MIN_DURATION_SECONDS,
-) -> tuple[list[MidiNote], dict[str, object]]:
-    """Analyze a WAV file, write the MIDI, and return notes plus the heatmap.
-
-    Returns the heatmap document in memory so a GUI caller can consume it
-    directly instead of serializing it to JSON and re-parsing it (the whole
-    round-trip was ~3s at 3-min basic-pitch scale).
-    """
+) -> tuple[list[MidiNote], HeatmapData]:
+    """Analyze a WAV file, write MIDI, and return compact heatmap data."""
 
     if backend == "simple":
         audio = read_wav(input_wav)
         notes = analyze_simple(audio)
         write_midi(output_midi, notes)
-        return notes, build_simple_heatmap(audio)
+        return notes, build_simple_heatmap_data(audio)
 
     if backend == "cqt":
-        heatmap = build_cqt_heatmap(input_wav)
-        notes = notes_from_heatmap(heatmap, threshold=threshold, min_duration_seconds=min_duration_seconds)
+        heatmap = build_cqt_heatmap_data(input_wav)
+        notes = notes_from_heatmap_data(
+            heatmap,
+            threshold=threshold,
+            min_duration_seconds=min_duration_seconds,
+            min_note_frames=MIN_NOTE_FRAMES,
+        )
         write_midi(output_midi, notes)
         return notes, heatmap
 
     if backend == "basic-pitch":
-        notes, heatmap = analyze_basic_pitch(
+        notes, heatmap = analyze_basic_pitch_data(
             input_wav,
             onset_threshold=onset_threshold,
             frame_threshold=frame_threshold,
@@ -243,6 +244,29 @@ def analyze_wav_to_midi_with_heatmap(
         return notes, heatmap
 
     raise ValueError(f"unsupported backend: {backend}")
+
+
+def analyze_wav_to_midi_with_heatmap(
+    input_wav: Path,
+    output_midi: Path,
+    backend: BackendName = "simple",
+    threshold: float = CQT_THRESHOLD,
+    onset_threshold: float = BASIC_PITCH_ONSET_THRESHOLD,
+    frame_threshold: float = BASIC_PITCH_FRAME_THRESHOLD,
+    min_duration_seconds: float = BASIC_PITCH_MIN_DURATION_SECONDS,
+) -> tuple[list[MidiNote], dict[str, object]]:
+    """Compatibility adapter returning the existing JSON-like heatmap document."""
+
+    notes, heatmap = analyze_wav_to_midi_with_heatmap_data(
+        input_wav,
+        output_midi,
+        backend=backend,
+        threshold=threshold,
+        onset_threshold=onset_threshold,
+        frame_threshold=frame_threshold,
+        min_duration_seconds=min_duration_seconds,
+    )
+    return notes, heatmap_to_document(heatmap)
 
 
 def analyze_simple(audio: AudioData) -> list[MidiNote]:
@@ -261,14 +285,10 @@ def analyze_simple(audio: AudioData) -> list[MidiNote]:
     return notes
 
 
-def write_heatmap(path: Path, heatmap: dict[str, object]) -> None:
+def write_heatmap(path: Path, heatmap: HeatmapData | dict[str, object]) -> None:
     """Write per-frame MIDI-note salience values as deterministic JSON."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Compact separators, no indent: a full-song heatmap is tens of MB and this
-    # file is only for the CLI --heatmap flag, so pretty-printing (which inflated
-    # it ~3x and slowed json.dumps) is not worth it.
-    path.write_text(json.dumps(heatmap, separators=(",", ":")) + "\n", encoding="utf-8")
+    write_heatmap_json(path, heatmap)
 
 
 def build_heatmap(audio: AudioData) -> dict[str, object]:
@@ -278,6 +298,12 @@ def build_heatmap(audio: AudioData) -> dict[str, object]:
 
 
 def build_simple_heatmap(audio: AudioData) -> dict[str, object]:
+    """Build the simple backend heatmap as the JSON-like compatibility document."""
+
+    return heatmap_to_document(build_simple_heatmap_data(audio))
+
+
+def build_simple_heatmap_data(audio: AudioData) -> HeatmapData:
     """Build normalized per-analysis activations using direct sine correlation."""
 
     midi_notes = list(MIDI_NOTES)
@@ -294,19 +320,26 @@ def build_simple_heatmap(audio: AudioData) -> dict[str, object]:
         raw_frames.append((start / audio.sample_rate, magnitudes))
 
     normalizer = max_magnitude if max_rms >= SILENCE_RMS_FLOOR else 0.0
-    frames = _normalize_frames(raw_frames, midi_notes, normalizer)
+    frame_times, activations = _normalize_rows(raw_frames, midi_notes, normalizer)
 
-    return _heatmap_document(
+    return HeatmapData(
         backend="simple",
         sample_rate=audio.sample_rate,
         hop_size=HOP_SIZE,
         window_size=WINDOW_SIZE,
         midi_notes=midi_notes,
-        frames=frames,
+        frame_times=frame_times,
+        activations=activations,
     )
 
 
 def build_cqt_heatmap(input_wav: Path) -> dict[str, object]:
+    """Build a CQT heatmap as the JSON-like compatibility document."""
+
+    return heatmap_to_document(build_cqt_heatmap_data(input_wav))
+
+
+def build_cqt_heatmap_data(input_wav: Path) -> HeatmapData:
     """Build a Constant-Q Transform salience heatmap aligned to piano MIDI notes."""
 
     try:
@@ -332,30 +365,30 @@ def build_cqt_heatmap(input_wav: Path) -> dict[str, object]:
         bins_per_octave=12,
     )
     magnitudes = np.abs(cqt)
+    frame_count = magnitudes.shape[1] if magnitudes.ndim == 2 else 0
     max_magnitude = float(magnitudes.max()) if magnitudes.size else 0.0
+    if frame_count and max_magnitude > 0.0:
+        matrix = np.ascontiguousarray((magnitudes / max_magnitude).T, dtype=np.float32)
+        np.clip(matrix, 0.0, 1.0, out=matrix)
+        # Match the former ``round(float(value), 6)`` semantics. NumPy rounds a
+        # float32 value in float32 precision, which can choose the other side of a
+        # six-decimal boundary. Quantize bounded frame blocks in float64, then put
+        # them back into the compact float32 owner without a full float64 matrix.
+        for start in range(0, frame_count, 4096):
+            block = matrix[start : start + 4096]
+            block[:] = np.round(block.astype(np.float64), 6)
+    else:
+        matrix = np.zeros((frame_count, len(midi_notes)), dtype=np.float32)
+    frame_times = [frame_index * HOP_SIZE / sample_rate for frame_index in range(frame_count)]
 
-    frames: list[dict[str, object]] = []
-    for frame_index in range(magnitudes.shape[1] if magnitudes.ndim == 2 else 0):
-        column = magnitudes[:, frame_index]
-        if max_magnitude > 0.0:
-            activations = np.clip(column / max_magnitude, 0.0, 1.0)
-            activation_list = [round(float(value), 6) for value in activations]
-        else:
-            activation_list = [0.0 for _note in midi_notes]
-        frames.append(
-            {
-                "time_seconds": frame_index * HOP_SIZE / sample_rate,
-                "activations": activation_list,
-            }
-        )
-
-    return _heatmap_document(
+    return HeatmapData(
         backend="cqt",
         sample_rate=int(sample_rate),
         hop_size=HOP_SIZE,
         window_size=WINDOW_SIZE,
         midi_notes=midi_notes,
-        frames=frames,
+        frame_times=frame_times,
+        activations=matrix,
     )
 
 
@@ -369,7 +402,32 @@ def analyze_basic_pitch(
     max_frequency: float | None = None,
     include_pitch_bends: bool = True,
 ) -> tuple[list[MidiNote], dict[str, object]]:
-    """Analyze audio with Spotify Basic Pitch and return notes plus model salience.
+    """Compatibility adapter returning Basic Pitch notes plus heatmap document."""
+
+    notes, heatmap = analyze_basic_pitch_data(
+        input_audio,
+        onset_threshold=onset_threshold,
+        frame_threshold=frame_threshold,
+        min_duration_seconds=min_duration_seconds,
+        infer_onsets=infer_onsets,
+        min_frequency=min_frequency,
+        max_frequency=max_frequency,
+        include_pitch_bends=include_pitch_bends,
+    )
+    return notes, heatmap_to_document(heatmap)
+
+
+def analyze_basic_pitch_data(
+    input_audio: Path,
+    onset_threshold: float = BASIC_PITCH_ONSET_THRESHOLD,
+    frame_threshold: float = BASIC_PITCH_FRAME_THRESHOLD,
+    min_duration_seconds: float = BASIC_PITCH_MIN_DURATION_SECONDS,
+    infer_onsets: bool = BASIC_PITCH_INFER_ONSETS,
+    min_frequency: float | None = None,
+    max_frequency: float | None = None,
+    include_pitch_bends: bool = True,
+) -> tuple[list[MidiNote], HeatmapData]:
+    """Analyze audio with Spotify Basic Pitch and return notes plus compact salience.
 
     Rather than calling ``predict()`` (which hides note-creation controls), this
     runs inference and then ``model_output_to_notes`` directly, so ``infer_onsets``
@@ -411,7 +469,7 @@ def analyze_basic_pitch(
         midi_tempo=120,
     )
     notes = [_basic_pitch_event_to_midi_note(event, include_pitch_bends=include_pitch_bends) for event in note_events]
-    heatmap = build_basic_pitch_heatmap(model_output, basic_pitch_constants)
+    heatmap = build_basic_pitch_heatmap_data(model_output, basic_pitch_constants)
     return sorted(notes, key=lambda note: (note.start_tick, note.pitch)), heatmap
 
 
@@ -452,37 +510,38 @@ def _basic_pitch_event_to_midi_note(event: object, *, include_pitch_bends: bool 
 
 
 def build_basic_pitch_heatmap(model_output: dict[str, object], basic_pitch_constants: object) -> dict[str, object]:
-    """Convert Basic Pitch note probabilities into the common heatmap JSON schema."""
+    """Convert Basic Pitch probabilities into the JSON-like compatibility schema."""
+
+    return heatmap_to_document(build_basic_pitch_heatmap_data(model_output, basic_pitch_constants))
+
+
+def build_basic_pitch_heatmap_data(model_output: dict[str, object], basic_pitch_constants: object) -> HeatmapData:
+    """Convert Basic Pitch note probabilities into compact heatmap data."""
 
     try:
         import numpy as np
     except ModuleNotFoundError as exc:  # pragma: no cover - basic-pitch depends on numpy
         raise RuntimeError("Basic Pitch backend requires numpy") from exc
 
-    note_probabilities = np.asarray(model_output["note"], dtype=float)
+    note_probabilities = np.asarray(model_output["note"])
     midi_notes = list(MIDI_NOTES)
     annotation_fps = int(getattr(basic_pitch_constants, "ANNOTATIONS_FPS"))
     annotation_hop = float(getattr(basic_pitch_constants, "ANNOTATION_HOP"))
-    frames: list[dict[str, object]] = []
+    if note_probabilities.ndim == 2:
+        matrix = np.clip(note_probabilities[:, : len(midi_notes)], 0.0, 1.0).astype(np.float32, copy=False)
+        matrix = np.ascontiguousarray(matrix, dtype=np.float32)
+    else:
+        matrix = np.zeros((0, len(midi_notes)), dtype=np.float32)
+    frame_times = [frame_index * annotation_hop for frame_index in range(matrix.shape[0])]
 
-    # Clip the whole matrix once (vectorized) rather than round()-ing each of the
-    # ~1.36M cells in a Python loop; .tolist() then yields plain floats.
-    clipped = np.clip(note_probabilities[:, : len(midi_notes)], 0.0, 1.0) if note_probabilities.ndim == 2 else np.empty((0, 0))
-    for frame_index, row in enumerate(clipped.tolist()):
-        frames.append(
-            {
-                "time_seconds": frame_index * annotation_hop,
-                "activations": row,
-            }
-        )
-
-    return _heatmap_document(
+    return HeatmapData(
         backend="basic-pitch",
         sample_rate=annotation_fps,
         hop_size=1,
         window_size=1,
         midi_notes=midi_notes,
-        frames=frames,
+        frame_times=frame_times,
+        activations=matrix,
     )
 
 
@@ -557,44 +616,20 @@ def _is_local_peak(activations: object, note_index: int) -> bool:
     return activation >= left and activation >= right
 
 
-def _heatmap_document(
-    *,
-    backend: str,
-    sample_rate: int,
-    hop_size: int,
-    window_size: int,
-    midi_notes: list[int],
-    frames: list[dict[str, object]],
-) -> dict[str, object]:
-    return {
-        "version": 1,
-        "backend": backend,
-        "sample_rate": sample_rate,
-        "hop_size": hop_size,
-        "window_size": window_size,
-        "midi_notes": midi_notes,
-        "frames": frames,
-    }
-
-
-def _normalize_frames(
+def _normalize_rows(
     raw_frames: list[tuple[float, list[float]]],
     midi_notes: list[int],
     normalizer: float,
-) -> list[dict[str, object]]:
-    frames: list[dict[str, object]] = []
+) -> tuple[list[float], list[list[float]]]:
+    frame_times: list[float] = []
+    rows: list[list[float]] = []
     for time_seconds, magnitudes in raw_frames:
+        frame_times.append(time_seconds)
         if normalizer > 0.0:
-            activations = [round(max(0.0, min(1.0, magnitude / normalizer)), 6) for magnitude in magnitudes]
+            rows.append([round(max(0.0, min(1.0, magnitude / normalizer)), 6) for magnitude in magnitudes])
         else:
-            activations = [0.0 for _note in midi_notes]
-        frames.append(
-            {
-                "time_seconds": time_seconds,
-                "activations": activations,
-            }
-        )
-    return frames
+            rows.append([0.0 for _note in midi_notes])
+    return frame_times, rows
 
 
 def _analysis_windows(samples: list[float]) -> list[tuple[int, int]]:
