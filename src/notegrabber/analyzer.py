@@ -166,23 +166,54 @@ def analyze_wav_to_midi(
     frame_threshold: float = BASIC_PITCH_FRAME_THRESHOLD,
     min_duration_seconds: float = BASIC_PITCH_MIN_DURATION_SECONDS,
 ) -> list[MidiNote]:
-    """Analyze a WAV file and write detected notes to a MIDI file."""
+    """Analyze a WAV file and write detected notes to a MIDI file.
+
+    Writes the heatmap JSON only when ``heatmap_path`` is given (the CLI path).
+    Callers that want the heatmap in memory should use
+    :func:`analyze_wav_to_midi_with_heatmap` and avoid the JSON round-trip.
+    """
+
+    notes, heatmap = analyze_wav_to_midi_with_heatmap(
+        input_wav,
+        output_midi,
+        backend=backend,
+        threshold=threshold,
+        onset_threshold=onset_threshold,
+        frame_threshold=frame_threshold,
+        min_duration_seconds=min_duration_seconds,
+    )
+    if heatmap_path is not None:
+        write_heatmap(heatmap_path, heatmap)
+    return notes
+
+
+def analyze_wav_to_midi_with_heatmap(
+    input_wav: Path,
+    output_midi: Path,
+    backend: BackendName = "simple",
+    threshold: float = CQT_THRESHOLD,
+    onset_threshold: float = BASIC_PITCH_ONSET_THRESHOLD,
+    frame_threshold: float = BASIC_PITCH_FRAME_THRESHOLD,
+    min_duration_seconds: float = BASIC_PITCH_MIN_DURATION_SECONDS,
+) -> tuple[list[MidiNote], dict[str, object]]:
+    """Analyze a WAV file, write the MIDI, and return notes plus the heatmap.
+
+    Returns the heatmap document in memory so a GUI caller can consume it
+    directly instead of serializing it to JSON and re-parsing it (the whole
+    round-trip was ~3s at 3-min basic-pitch scale).
+    """
 
     if backend == "simple":
         audio = read_wav(input_wav)
         notes = analyze_simple(audio)
         write_midi(output_midi, notes)
-        if heatmap_path is not None:
-            write_heatmap(heatmap_path, build_simple_heatmap(audio))
-        return notes
+        return notes, build_simple_heatmap(audio)
 
     if backend == "cqt":
         heatmap = build_cqt_heatmap(input_wav)
         notes = notes_from_heatmap(heatmap, threshold=threshold, min_duration_seconds=min_duration_seconds)
         write_midi(output_midi, notes)
-        if heatmap_path is not None:
-            write_heatmap(heatmap_path, heatmap)
-        return notes
+        return notes, heatmap
 
     if backend == "basic-pitch":
         notes, heatmap = analyze_basic_pitch(
@@ -192,9 +223,7 @@ def analyze_wav_to_midi(
             min_duration_seconds=min_duration_seconds,
         )
         write_midi(output_midi, notes)
-        if heatmap_path is not None:
-            write_heatmap(heatmap_path, heatmap)
-        return notes
+        return notes, heatmap
 
     raise ValueError(f"unsupported backend: {backend}")
 
@@ -219,7 +248,10 @@ def write_heatmap(path: Path, heatmap: dict[str, object]) -> None:
     """Write per-frame MIDI-note salience values as deterministic JSON."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(heatmap, indent=2) + "\n", encoding="utf-8")
+    # Compact separators, no indent: a full-song heatmap is tens of MB and this
+    # file is only for the CLI --heatmap flag, so pretty-printing (which inflated
+    # it ~3x and slowed json.dumps) is not worth it.
+    path.write_text(json.dumps(heatmap, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
 def build_heatmap(audio: AudioData) -> dict[str, object]:
@@ -416,13 +448,14 @@ def build_basic_pitch_heatmap(model_output: dict[str, object], basic_pitch_const
     annotation_hop = float(getattr(basic_pitch_constants, "ANNOTATION_HOP"))
     frames: list[dict[str, object]] = []
 
-    for frame_index in range(note_probabilities.shape[0] if note_probabilities.ndim == 2 else 0):
-        row = note_probabilities[frame_index, : len(midi_notes)]
-        activations = np.clip(row, 0.0, 1.0)
+    # Clip the whole matrix once (vectorized) rather than round()-ing each of the
+    # ~1.36M cells in a Python loop; .tolist() then yields plain floats.
+    clipped = np.clip(note_probabilities[:, : len(midi_notes)], 0.0, 1.0) if note_probabilities.ndim == 2 else np.empty((0, 0))
+    for frame_index, row in enumerate(clipped.tolist()):
         frames.append(
             {
                 "time_seconds": frame_index * annotation_hop,
-                "activations": [round(float(value), 6) for value in activations],
+                "activations": row,
             }
         )
 

@@ -83,6 +83,53 @@ def test_single_a4_sine_heatmap_peak_note_is_69(tmp_path: Path) -> None:
     ), "MIDI note 69 should have the strongest activation in active frames"
 
 
+@pytest.mark.heatmap
+def test_with_heatmap_returns_document_in_process_without_writing_json(tmp_path: Path) -> None:
+    """analyze_wav_to_midi_with_heatmap returns the heatmap in memory and writes
+    no heatmap file (issue #25: skip the serialize -> re-parse round-trip)."""
+
+    from notegrabber.analyzer import analyze_wav_to_midi_with_heatmap
+
+    input_wav = write_single_note_wav(tmp_path / "a4.wav", note=69)
+    output_mid = tmp_path / "a4.mid"
+
+    notes, heatmap = analyze_wav_to_midi_with_heatmap(input_wav, output_mid, backend="cqt")
+
+    assert output_mid.exists()
+    assert not (tmp_path / "a4.heatmap.json").exists()  # no stray heatmap file
+    assert isinstance(heatmap, dict)
+    assert heatmap["midi_notes"] == EXPECTED_MIDI_NOTES
+    assert heatmap["frames"] and all(
+        0.0 <= a <= 1.0 for frame in heatmap["frames"] for a in frame["activations"]
+    )
+    # The returned document must round-trip into the GUI model unchanged.
+    from notegrabber.gui.state import heatmap_from_document
+
+    model = heatmap_from_document(heatmap)
+    assert model.midi_notes == EXPECTED_MIDI_NOTES
+    assert len(model.frame_times) == len(heatmap["frames"])
+
+
+@pytest.mark.heatmap
+def test_written_heatmap_file_matches_returned_document(tmp_path: Path) -> None:
+    """The CLI file path and the in-process document describe the same heatmap."""
+
+    from notegrabber.analyzer import analyze_wav_to_midi, analyze_wav_to_midi_with_heatmap
+
+    input_wav = write_single_note_wav(tmp_path / "a4.wav", note=69)
+
+    _, returned = analyze_wav_to_midi_with_heatmap(input_wav, tmp_path / "mem.mid", backend="cqt")
+    heatmap_file = tmp_path / "written.heatmap.json"
+    analyze_wav_to_midi(input_wav, tmp_path / "file.mid", heatmap_path=heatmap_file, backend="cqt")
+
+    written = load_heatmap(heatmap_file)
+    assert written["midi_notes"] == returned["midi_notes"]
+    assert len(written["frames"]) == len(returned["frames"])
+    for wf, rf in zip(written["frames"], returned["frames"]):
+        assert wf["time_seconds"] == pytest.approx(rf["time_seconds"])
+        assert wf["activations"] == pytest.approx(rf["activations"])
+
+
 @pytest.mark.cli
 @pytest.mark.heatmap
 def test_silence_heatmap_is_valid_with_no_meaningful_activation(tmp_path: Path) -> None:

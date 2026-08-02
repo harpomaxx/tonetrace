@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from notegrabber.analyzer import BackendName, analyze_wav_to_midi
+from notegrabber.analyzer import BackendName, analyze_wav_to_midi_with_heatmap
 from notegrabber.midi import MidiNote, TICKS_PER_SECOND, write_midi
 from notegrabber.midi_render import render_midi_to_wav
 
@@ -53,7 +52,9 @@ class AnalysisResult:
     audio_path: Path
     backend: BackendName
     midi_path: Path
-    heatmap_path: Path
+    # The heatmap is returned in-process (see AnalysisResult.heatmap); no JSON
+    # file is written for the GUI path, so this stays None.
+    heatmap_path: Path | None
     rendered_midi_wav: Path | None
     render_error: str | None
     notes: list[GuiMidiNote]
@@ -88,7 +89,6 @@ class AnalysisWorker(QObject):
             self.progress.emit("Preparing analysis…")
             work_dir = Path(tempfile.mkdtemp(prefix="notegrabber-gui-"))
             midi_path = work_dir / "analysis.mid"
-            heatmap_path = work_dir / "heatmap.json"
             rendered_path = work_dir / "analysis.wav"
 
             analysis_audio_path = self.request.audio_path
@@ -105,24 +105,23 @@ class AnalysisWorker(QObject):
                 )
 
             self.progress.emit(f"Analyzing with {self.request.backend}…")
-            local_midi_notes = analyze_wav_to_midi(
+            # Get the heatmap in memory: no JSON serialize + re-parse round-trip
+            # (that was ~3s and a tens-of-MB temp file at 3-min basic-pitch scale).
+            local_midi_notes, heatmap_document = analyze_wav_to_midi_with_heatmap(
                 analysis_audio_path,
                 midi_path,
-                heatmap_path=heatmap_path,
                 backend=self.request.backend,
                 threshold=self.request.threshold,
                 onset_threshold=self.request.onset_threshold,
                 frame_threshold=self.request.frame_threshold,
                 min_duration_seconds=self.request.min_duration_seconds,
             )
-            heatmap_document = json.loads(heatmap_path.read_text(encoding="utf-8"))
             preview_midi_notes = _clip_midi_notes_to_duration(local_midi_notes, self.request.range_duration_seconds)
             midi_notes = local_midi_notes
             if offset_seconds:
                 midi_notes = _offset_midi_notes(local_midi_notes, offset_seconds)
                 _offset_heatmap_document(heatmap_document, offset_seconds)
                 write_midi(midi_path, midi_notes)
-                heatmap_path.write_text(json.dumps(heatmap_document, indent=2), encoding="utf-8")
             heatmap = heatmap_from_document(heatmap_document)
             notes = midi_notes_to_gui(midi_notes, source=self.request.backend)
 
@@ -141,7 +140,7 @@ class AnalysisWorker(QObject):
                     audio_path=self.request.audio_path,
                     backend=self.request.backend,
                     midi_path=midi_path,
-                    heatmap_path=heatmap_path,
+                    heatmap_path=None,
                     rendered_midi_wav=rendered_midi_wav,
                     render_error=render_error,
                     notes=notes,
