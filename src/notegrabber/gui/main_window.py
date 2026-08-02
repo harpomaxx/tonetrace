@@ -37,6 +37,7 @@ from .midi_preview_worker import MidiPreviewRequest, MidiPreviewResult, MidiPrev
 from .overview_worker import OverviewResult, OverviewWorker
 from .state import GuiMidiNote, ProjectState, delete_gui_note, gui_notes_to_midi, retune_notes_from_heatmap, update_gui_note
 from .theme import THEMES, active_theme, build_stylesheet, polish_button, set_active_theme
+from .widgets.collapsible import CollapsibleSection
 from .widgets.controls import AnalysisControls
 from .widgets.piano_roll import PianoRollWidget
 from .widgets.sequence import SequenceWidget
@@ -105,6 +106,8 @@ class MainWindow(QMainWindow):
         self.waveform.left_gutter = self.piano_roll.keyboard_width
         self.sequence = SequenceWidget()
         self.transport = TransportWidget()
+        # File name shown as a prefix on the stats strip (no longer its own row).
+        self._current_file_name = ""
         self.file_label = QLabel("No audio loaded")
         self.selected_note_label = QLabel("No note selected")
         self.note_start_spin = self._seconds_spin()
@@ -187,13 +190,18 @@ class MainWindow(QMainWindow):
         self.piano_roll.set_data(None, [])
         self.sequence.set_notes([])
         self.controls.set_can_export(False)
+        # The file name folds into the stats strip; keep the full path as its
+        # tooltip so it is still discoverable without its own row.
+        self._current_file_name = path.name
         self.file_label.setText(f"{path.name} — {path}")
+        self.stats_label.setToolTip(f"{path}\n\nTranscription summary: file · note count · duration · estimated tempo · detected key.")
+        self._update_stats([])
         self.original_player.setSource(QUrl.fromLocalFile(str(path)))
         self.midi_player.setSource(QUrl())
         self.waveform.set_message("Loading waveform preview…")
         self._start_waveform_load(path)
         self._start_overview_load(path)
-        self.transport.set_status("Audio loaded. Loading waveform and overview in background…")
+        self._set_status("Audio loaded. Loading waveform and overview in background…")
         self.transport.set_playback_available(original=True, midi=False)
 
     def _seconds_spin(self, *, minimum: float = 0.0) -> QDoubleSpinBox:
@@ -241,10 +249,16 @@ class MainWindow(QMainWindow):
         return field
 
     def _build_layout(self) -> None:
+        # --- Top block: actions + playback, the single status line, then the stats
+        # strip. The status line lives HERE (in the always-visible top block), not
+        # in the QMainWindow status bar. A bottom status bar can be clipped when the
+        # window is taller than the screen; keeping status in the top block (and
+        # making the left column scroll, below) guarantees it is always on screen.
+        # One status home, guaranteed visible.
         top = QWidget()
         top_layout = QVBoxLayout(top)
-        # One-line app status strip across the top.
-        top_layout.addWidget(self.transport.status_label)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(8)
         # Action buttons and the Playback group share one row to save vertical space.
         action_row = QWidget()
         action_row_layout = QHBoxLayout(action_row)
@@ -254,43 +268,86 @@ class MainWindow(QMainWindow):
         action_row_layout.addStretch(1)
         action_row_layout.addWidget(self.transport.playback_group)
         top_layout.addWidget(action_row)
-        top_layout.addWidget(self.file_label)
-        top_layout.addWidget(self.waveform)
+        # The one status line: themed LED strip, always on screen.
+        top_layout.addWidget(self.transport.status_label)
+        # The loaded file name folds into the stats strip rather than owning its own
+        # row (it is reference info, not a section). The waveform sits below it.
         self.stats_label = QLabel("Notes 0  ·  0:00  ·  — BPM  ·  —")
         self.stats_label.setObjectName("statsStrip")
-        self.stats_label.setToolTip("Transcription summary: note count · duration · estimated tempo · detected key. Drag a range on the waveform to scope it to that slice (shown as 'Selection:'). Updates after Analyze and edits.")
+        self.stats_label.setToolTip("Transcription summary: file · note count · duration · estimated tempo · detected key. Drag a range on the waveform to scope it to that slice (shown as 'Selection:'). Updates after Analyze and edits.")
         top_layout.addWidget(self.stats_label)
+        top_layout.addWidget(self.waveform)
 
         self.piano_scroll = QScrollArea()
         self.piano_scroll.setWidgetResizable(True)
         self.piano_scroll.setWidget(self.piano_roll)
-        self.piano_scroll.setMinimumHeight(240)
-        self.piano_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.piano_scroll.setMinimumHeight(200)
+        self.piano_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         # Repaint the whole canvas as it scrolls horizontally so the pinned
         # keyboard (drawn at the visible left edge) does not smear or ghost.
         self.piano_scroll.horizontalScrollBar().valueChanged.connect(self.piano_roll.update)
+
+        # The heatmap/roll pane: its section label plus the scrollable canvas.
+        roll_pane = QWidget()
+        roll_layout = QVBoxLayout(roll_pane)
+        roll_layout.setContentsMargins(0, 0, 0, 0)
+        roll_layout.setSpacing(6)
+        roll_layout.addWidget(self._section_label("Heatmap + MIDI note map"))
+        roll_layout.addWidget(self.piano_scroll, 1)
+
+        # The detail pane: the always-visible note inspector, then the collapsible
+        # detected-notes table docked underneath (collapsed by default so the roll
+        # owns the height until the list is wanted).
+        detail_pane = QWidget()
+        detail_layout = QVBoxLayout(detail_pane)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(6)
+        detail_layout.addWidget(self._build_note_inspector())
+        self.sequence_section = CollapsibleSection("Detected notes", self.sequence, expanded=False)
+        self.sequence.count_changed.connect(self._on_sequence_count_changed)
+        detail_layout.addWidget(self.sequence_section, 1)
+
+        # A vertical splitter lets the roll and the detail pane be resized against
+        # each other (and the detail pane collapse to just its header row), so the
+        # note list is always reachable without ever pushing the roll off-screen.
+        content_splitter = QSplitter(Qt.Orientation.Vertical)
+        content_splitter.addWidget(roll_pane)
+        content_splitter.addWidget(detail_pane)
+        content_splitter.setStretchFactor(0, 1)
+        content_splitter.setStretchFactor(1, 0)
+        content_splitter.setChildrenCollapsible(False)
+        self.content_splitter = content_splitter
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(14, 12, 14, 12)
         right_layout.setSpacing(10)
         right_layout.addWidget(top)
-        right_layout.addWidget(self._section_label("Heatmap + MIDI note map"))
-        right_layout.addWidget(self.piano_scroll, 2)
-        right_layout.addWidget(self._build_note_inspector())
-        right_layout.addWidget(self._section_label("Detected sequence"))
-        self.sequence.setMinimumHeight(150)
-        right_layout.addWidget(self.sequence, 1)
+        right_layout.addWidget(content_splitter, 1)
+
+        # Wrap the left control column in a scroll area so its tall stack of groups
+        # cannot force the whole window taller than a laptop screen (which was
+        # pushing the bottom of the app off-screen). It scrolls when space is tight.
+        controls_scroll = QScrollArea()
+        controls_scroll.setWidgetResizable(True)
+        controls_scroll.setWidget(self.controls)
+        controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        controls_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        controls_scroll.setMinimumWidth(260)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self.controls)
+        splitter.addWidget(controls_scroll)
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([280, 1000])
         self.setCentralWidget(splitter)
         self._update_heatmap_view_height()
+        # The visible status is the top-block strip; the QMainWindow status bar is
+        # kept (tests read currentMessage()) but hidden so status shows in exactly
+        # one place and cannot be clipped when the window exceeds the screen height.
         self.statusBar().showMessage("Ready")
+        self.statusBar().hide()
 
     @staticmethod
     def _section_label(text: str) -> QLabel:
@@ -500,8 +557,12 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
 
     def _update_heatmap_view_height(self) -> None:
+        # The vertical splitter now governs how height is shared between the roll
+        # and the (collapsed-by-default) detail pane, so the roll no longer needs a
+        # tight cap. Keep only a generous ceiling so it does not grow unbounded on
+        # a very tall monitor.
         if hasattr(self, "piano_scroll"):
-            self.piano_scroll.setMaximumHeight(max(260, round(self.height() * 0.48)))
+            self.piano_scroll.setMaximumHeight(max(360, round(self.height() * 0.72)))
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt API
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
@@ -566,7 +627,10 @@ class MainWindow(QMainWindow):
             )
         else:
             stats = compute_stats(notes, duration_seconds=self.waveform.duration_seconds())
-        self.stats_label.setText(stats.strip_text())
+        text = stats.strip_text()
+        if self._current_file_name:
+            text = f"{self._current_file_name}  ·  {text}"
+        self.stats_label.setText(text)
 
     def _select_note(self, index: int | None, _seek_seconds: float | None = None) -> None:
         notes = self.state.current_notes
@@ -1251,8 +1315,17 @@ class MainWindow(QMainWindow):
         self._set_status(f"Exported {note_count} notes as {label} to {output}")
 
     def _set_status(self, text: str) -> None:
+        # Single status home: the themed strip in the always-visible top block, so
+        # it is never clipped even when the window is taller than the screen. The
+        # QMainWindow status bar is kept in sync as a harmless mirror (and for the
+        # tests that read currentMessage()), but the strip is the one users see.
         self.transport.set_status(text)
         self.statusBar().showMessage(text)
+
+    def _on_sequence_count_changed(self, count: int) -> None:
+        """Reflect the detected-note count in the collapsible section header."""
+
+        self.sequence_section.set_suffix(f"  ·  {count}" if count else "")
 
     def _apply_style(self) -> None:
         self.setStyleSheet(build_stylesheet(active_theme()))

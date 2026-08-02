@@ -302,9 +302,40 @@ def test_main_window_constructs_offscreen_when_pyside6_is_installed() -> None:
     assert window.controls.backend() == "basic-pitch"
     assert window.original_player.audioOutput() is window.original_audio
     assert window.midi_player.audioOutput() is window.midi_audio
-    assert window.piano_scroll.maximumHeight() <= round(window.height() * 0.48) + 1
-    assert window.sequence.minimumHeight() >= 150
+    assert window.piano_scroll.maximumHeight() <= round(window.height() * 0.72) + 1
+    # The detected-notes table now lives in a collapsible section under a vertical
+    # splitter, collapsed by default so the piano roll owns the height.
+    assert not window.sequence_section.is_expanded()
     assert not window.transport.play_both.isEnabled()
+    window.close()
+    app.processEvents()
+
+
+def test_window_fits_laptop_height_and_status_is_visible() -> None:
+    # Regression: the left control column used to force the window minimum height
+    # past a laptop screen (~768 px), pushing the status line off-screen. The
+    # window must fit within a laptop height, and the single status line must live
+    # in the always-visible top block (not the hidden QMainWindow status bar).
+    from PySide6.QtWidgets import QApplication
+    from notegrabber.gui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+
+    assert window.minimumSizeHint().height() <= 768
+    window.resize(1366, 768)
+    window.show()
+    app.processEvents()
+    assert window.height() <= 768  # not forced taller than the screen
+
+    # The single status home is the top-block strip; the status bar is hidden.
+    assert not window.statusBar().isVisible()
+    window._set_status("hello status")
+    assert window.transport.status_label.text() == "hello status"
+    strip = window.transport.status_label
+    y = strip.mapTo(window, strip.rect().topLeft()).y()
+    assert 0 <= y < window.height()  # on screen
+
     window.close()
     app.processEvents()
 
