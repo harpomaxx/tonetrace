@@ -111,6 +111,29 @@ def test_with_heatmap_returns_document_in_process_without_writing_json(tmp_path:
 
 
 @pytest.mark.heatmap
+def test_analyze_wav_to_midi_writes_heatmap_without_materializing_document(tmp_path: Path, monkeypatch) -> None:
+    """The normal CLI/internal path streams compact data instead of building the
+    compatibility document (issue #27)."""
+
+    import notegrabber.analyzer as analyzer
+    from notegrabber.analyzer import analyze_wav_to_midi
+
+    input_wav = write_single_note_wav(tmp_path / "a4.wav", note=69)
+    output_heatmap = tmp_path / "streamed.heatmap.json"
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("normal CLI path must not materialize heatmap_to_document")
+
+    monkeypatch.setattr(analyzer, "heatmap_to_document", forbidden)
+    analyze_wav_to_midi(input_wav, tmp_path / "file.mid", heatmap_path=output_heatmap, backend="cqt")
+
+    assert output_heatmap.exists()
+    written = load_heatmap(output_heatmap)
+    assert written["midi_notes"] == EXPECTED_MIDI_NOTES
+    assert written["frames"]
+
+
+@pytest.mark.heatmap
 def test_written_heatmap_file_matches_returned_document(tmp_path: Path) -> None:
     """The CLI file path and the in-process document describe the same heatmap."""
 

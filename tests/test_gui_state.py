@@ -16,7 +16,7 @@ from notegrabber.gui.state import (
     midi_note_to_gui,
     retune_notes_from_heatmap,
 )
-from notegrabber.gui.analysis_worker import _clip_midi_notes_to_duration, _offset_heatmap_document, _offset_midi_notes
+from notegrabber.gui.analysis_worker import _clip_midi_notes_to_duration, _offset_midi_notes
 from notegrabber.gui.overview import PitchOverview, downsample_overview_frames
 from notegrabber.midi import MidiNote, TICKS_PER_SECOND
 
@@ -42,15 +42,12 @@ def test_project_state_current_notes_preserves_empty_tuned_list() -> None:
 
 
 @pytest.mark.gui
-def test_analysis_worker_offsets_range_results_to_original_timeline() -> None:
+def test_analysis_worker_offsets_range_notes_to_original_timeline() -> None:
     notes = [MidiNote(pitch=60, start_tick=TICKS_PER_SECOND, duration_ticks=TICKS_PER_SECOND // 2, velocity=80)]
-    document = {"frames": [{"time_seconds": 0.0, "activations": [0.5]}, {"time_seconds": 0.1, "activations": [0.2]}]}
 
     shifted_notes = _offset_midi_notes(notes, 10.0)
-    _offset_heatmap_document(document, 10.0)
 
     assert shifted_notes[0].start_tick == 11 * TICKS_PER_SECOND
-    assert [frame["time_seconds"] for frame in document["frames"]] == [10.0, 10.1]
 
 
 @pytest.mark.gui
@@ -131,7 +128,18 @@ def test_heatmap_document_round_trip_validates_dimensions() -> None:
         hop_size=1,
         window_size=1,
     )
-    assert heatmap_to_document(heatmap) == document
+    round_trip = heatmap_to_document(heatmap)
+    assert round_trip["version"] == document["version"]
+    assert round_trip["backend"] == document["backend"]
+    assert round_trip["sample_rate"] == document["sample_rate"]
+    assert round_trip["hop_size"] == document["hop_size"]
+    assert round_trip["window_size"] == document["window_size"]
+    assert round_trip["midi_notes"] == document["midi_notes"]
+    assert [frame["time_seconds"] for frame in round_trip["frames"]] == pytest.approx(
+        [frame["time_seconds"] for frame in document["frames"]]
+    )
+    for actual, expected in zip(round_trip["frames"], document["frames"]):
+        assert actual["activations"] == pytest.approx(expected["activations"])
 
 
 @pytest.mark.gui
@@ -160,10 +168,13 @@ def test_activation_matrix_matches_accessor_and_is_clamped() -> None:
     # Clamping applied.
     assert float(matrix[0, 0]) == 0.0
     assert float(matrix[0, 1]) == 1.0
-    # Cached: same object returned on the second call.
+    # The matrix is primary storage: the accessor returns the same object stored
+    # on the heatmap, not a second lazy cache.
     assert heatmap.activation_matrix() is matrix
+    assert heatmap.activations is matrix
+    assert matrix.flags.c_contiguous
 
-    # Computing the lazy matrix cache must not affect equality (compare=False).
+    # Accessing the matrix must not affect equality.
     clamped = GuiHeatmap(
         backend="cqt",
         midi_notes=[60, 61, 62],

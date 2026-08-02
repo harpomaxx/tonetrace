@@ -6,13 +6,11 @@ import shutil
 import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
-
-from notegrabber.analyzer import BackendName, analyze_wav_to_midi_with_heatmap
+from notegrabber.analyzer import BackendName, analyze_wav_to_midi_with_heatmap_data
 from notegrabber.midi import MidiNote, TICKS_PER_SECOND, write_midi
 from notegrabber.midi_render import render_midi_to_wav
 
-from .state import GuiHeatmap, GuiMidiNote, heatmap_from_document, midi_notes_to_gui
+from .state import GuiHeatmap, GuiMidiNote, midi_notes_to_gui
 
 try:  # pragma: no cover - imported only when GUI deps are installed
     from PySide6.QtCore import QObject, Signal, Slot
@@ -105,9 +103,9 @@ class AnalysisWorker(QObject):
                 )
 
             self.progress.emit(f"Analyzing with {self.request.backend}…")
-            # Get the heatmap in memory: no JSON serialize + re-parse round-trip
-            # (that was ~3s and a tens-of-MB temp file at 3-min basic-pitch scale).
-            local_midi_notes, heatmap_document = analyze_wav_to_midi_with_heatmap(
+            # Get compact heatmap data in memory: no JSON document or nested-list
+            # materialization on the GUI path.
+            local_midi_notes, local_heatmap = analyze_wav_to_midi_with_heatmap_data(
                 analysis_audio_path,
                 midi_path,
                 backend=self.request.backend,
@@ -118,11 +116,11 @@ class AnalysisWorker(QObject):
             )
             preview_midi_notes = _clip_midi_notes_to_duration(local_midi_notes, self.request.range_duration_seconds)
             midi_notes = local_midi_notes
+            heatmap = local_heatmap
             if offset_seconds:
                 midi_notes = _offset_midi_notes(local_midi_notes, offset_seconds)
-                _offset_heatmap_document(heatmap_document, offset_seconds)
+                heatmap = local_heatmap.with_time_offset(offset_seconds)
                 write_midi(midi_path, midi_notes)
-            heatmap = heatmap_from_document(heatmap_document)
             notes = midi_notes_to_gui(midi_notes, source=self.request.backend)
 
             rendered_midi_wav: Path | None = None
@@ -171,13 +169,6 @@ def _offset_midi_notes(notes: list[MidiNote], offset_seconds: float) -> list[Mid
         replace(note, start_tick=max(0, note.start_tick + offset_ticks))
         for note in notes
     ]
-
-
-def _offset_heatmap_document(document: dict[str, Any], offset_seconds: float) -> None:
-    """Shift a heatmap document's frame times in-place by offset seconds."""
-
-    for frame in document.get("frames", []):
-        frame["time_seconds"] = float(frame.get("time_seconds", 0.0)) + offset_seconds
 
 
 def _clip_midi_notes_to_duration(notes: list[MidiNote], duration_seconds: float | None) -> list[MidiNote]:

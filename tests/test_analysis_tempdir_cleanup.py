@@ -96,6 +96,62 @@ def test_close_removes_current_analysis_dir(tmp_path):
     assert window._analysis_dir is None
 
 
+def test_analysis_worker_emits_compact_offset_heatmap_without_document_conversion(tmp_path, monkeypatch):
+    import notegrabber.gui.analysis_worker as worker_module
+    from notegrabber.gui.analysis_worker import AnalysisRequest, AnalysisWorker
+    from notegrabber.heatmap import HeatmapData
+    from notegrabber.midi import MidiNote
+
+    np = pytest.importorskip("numpy")
+    matrix = np.zeros((2, 3), dtype=np.float32)
+    compact = HeatmapData(
+        backend="cqt",
+        midi_notes=[60, 61, 62],
+        frame_times=[0.0, 0.1],
+        activations=matrix,
+        sample_rate=100,
+        hop_size=10,
+        window_size=20,
+    )
+
+    def fake_analyze(*_args, **_kwargs):
+        return [MidiNote(pitch=60, start_tick=0, duration_ticks=10, velocity=80)], compact
+
+    def fake_extract(_input_audio, output_wav, *, start_seconds, duration_seconds):
+        assert start_seconds == 12.5
+        assert duration_seconds == 1.0
+        return output_wav
+
+    monkeypatch.setattr(worker_module, "analyze_wav_to_midi_with_heatmap_data", fake_analyze)
+    monkeypatch.setattr(worker_module, "_extract_audio_range", fake_extract)
+
+    request = AnalysisRequest(
+        audio_path=tmp_path / "song.wav",
+        backend="cqt",
+        render_midi=False,
+        threshold=0.5,
+        onset_threshold=0.5,
+        frame_threshold=0.3,
+        min_duration_seconds=0.05,
+        range_start_seconds=12.5,
+        range_duration_seconds=1.0,
+    )
+    worker = AnalysisWorker(request)
+    results: list[object] = []
+    worker.finished.connect(results.append)
+
+    worker.run()
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.heatmap is not compact
+    assert result.heatmap.frame_times == [12.5, 12.6]
+    assert result.heatmap.activation_matrix() is matrix
+    assert result.heatmap_path is None
+    assert result.notes[0].start_seconds == pytest.approx(12.5)
+    assert result.analysis_start_seconds == pytest.approx(12.5)
+
+
 def test_worker_removes_work_dir_when_analysis_fails(tmp_path, monkeypatch):
     import notegrabber.gui.analysis_worker as worker_module
     from notegrabber.gui.analysis_worker import AnalysisRequest, AnalysisWorker
@@ -113,7 +169,7 @@ def test_worker_removes_work_dir_when_analysis_fails(tmp_path, monkeypatch):
         raise RuntimeError("analysis exploded")
 
     monkeypatch.setattr(worker_module.tempfile, "mkdtemp", tracking_mkdtemp)
-    monkeypatch.setattr(worker_module, "analyze_wav_to_midi_with_heatmap", boom)
+    monkeypatch.setattr(worker_module, "analyze_wav_to_midi_with_heatmap_data", boom)
 
     request = AnalysisRequest(
         audio_path=tmp_path / "song.wav",
