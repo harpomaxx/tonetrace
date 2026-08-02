@@ -248,6 +248,30 @@ QWidget#noteInspector {
     border-radius: 10px;
     background: #0b1018;
 }
+QToolButton#collapsibleHeader {
+    text-align: left;
+    padding: 6px 10px;
+    border: 1px solid #263244;
+    border-radius: 8px;
+    background: #0d1118;
+    color: #dbe6f6;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+QToolButton#collapsibleHeader:hover {
+    border-color: #8a5a38;
+}
+QToolButton#collapsibleHeader:checked {
+    border-color: #ffb33f;
+    color: #ffc44d;
+}
+QLabel#emptyState {
+    color: #8f9bb0;
+    font-size: 13px;
+    padding: 24px 16px;
+}
 QGroupBox::title {
     subcontrol-origin: margin;
     left: 14px;
@@ -791,6 +815,30 @@ QWidget#noteInspector {{
     border: 1px solid {border};
     border-radius: 10px;
     background: {panel_lo};
+}}
+QToolButton#collapsibleHeader {{
+    text-align: left;
+    padding: 6px 10px;
+    border: 1px solid {border};
+    border-radius: 8px;
+    background: {panel_lo};
+    color: {text};
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}}
+QToolButton#collapsibleHeader:hover {{
+    border-color: {accent};
+}}
+QToolButton#collapsibleHeader:checked {{
+    border-color: {accent};
+    color: {accent};
+}}
+QLabel#emptyState {{
+    color: {text_dim};
+    font-size: 13px;
+    padding: 24px 16px;
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
