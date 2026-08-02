@@ -142,3 +142,40 @@ def test_theme_switch_recolors_piano_roll_and_persists_lut():
         t.set_active_theme("default")
         PianoRollWidget._HEAT_LUT = None
         PianoRollWidget._HEAT_RGBA_LUT = None
+
+
+def test_waveform_overview_color_uses_theme_keyed_lut():
+    """WaveformWidget._overview_color indexes a cached LUT that matches the ramp
+    exactly and rebuilds when the active theme changes (issue #20)."""
+
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QApplication
+
+    from notegrabber.gui import theme as t
+    from notegrabber.gui.widgets.waveform import WaveformWidget
+
+    QApplication.instance() or QApplication([])
+
+    def exact(value: float) -> tuple[int, int, int, int]:
+        value = max(0.0, min(1.0, value))
+        (r0, rs), (g0, gs), (b0, bs), (a0, as_) = t.active_theme().heat.channels()
+        return QColor(int(r0 + rs * value), int(g0 + gs * value), int(b0 + bs * value), int(a0 + as_ * value)).getRgb()
+
+    try:
+        t.set_active_theme("default")
+        WaveformWidget._HEAT_LUT = None
+        # Every quantised entry matches the exact per-channel ramp.
+        for i in range(256):
+            v = i / 255.0
+            assert WaveformWidget._overview_color(v).getRgb() == exact(v)
+        assert WaveformWidget._HEAT_LUT_THEME == "default"
+
+        # Switching themes rebuilds the LUT and yields different colors.
+        default_top = WaveformWidget._overview_color(1.0).getRgb()
+        t.set_active_theme("rebirth")
+        assert WaveformWidget._overview_color(1.0).getRgb() == exact(1.0)
+        assert WaveformWidget._HEAT_LUT_THEME == "rebirth"
+        assert WaveformWidget._overview_color(1.0).getRgb() != default_top
+    finally:
+        t.set_active_theme("default")
+        WaveformWidget._HEAT_LUT = None

@@ -420,13 +420,32 @@ class WaveformWidget(QWidget):
         painter.setPen(QPen(QColor(border.red(), border.green(), border.blue(), 110), 1))
         painter.drawLine(0, top, width, top)
 
-    @staticmethod
-    def _overview_color(value: float) -> QColor:
+    # 256-entry color lookup table, built lazily and shared by every instance.
+    # The overview strip fills one rect per (frame, band) cell; rebuilding a
+    # QColor per cell (and re-reading the ramp) dominated its paint cost, so we
+    # quantise the activation to a byte and index this list instead. Keyed on the
+    # active theme id so a theme change rebuilds the ramp. Mirrors PianoRollWidget.
+    _HEAT_LUT: list[QColor] | None = None
+    _HEAT_LUT_THEME: str | None = None
+
+    @classmethod
+    def _heat_lut(cls) -> list[QColor]:
+        theme = active_theme()
+        if cls._HEAT_LUT is None or cls._HEAT_LUT_THEME != theme.id:
+            (r0, rs), (g0, gs), (b0, bs), (a0, as_) = theme.heat.channels()
+            cls._HEAT_LUT = [
+                QColor(int(r0 + rs * v), int(g0 + gs * v), int(b0 + bs * v), int(a0 + as_ * v))
+                for v in (i / 255.0 for i in range(256))
+            ]
+            cls._HEAT_LUT_THEME = theme.id
+        return cls._HEAT_LUT
+
+    @classmethod
+    def _overview_color(cls, value: float) -> QColor:
         """Map an overview activation to color via the active theme's heat ramp."""
 
-        value = max(0.0, min(1.0, value))
-        (r0, rs), (g0, gs), (b0, bs), (a0, as_) = active_theme().heat.channels()
-        return QColor(int(r0 + rs * value), int(g0 + gs * value), int(b0 + bs * value), int(a0 + as_ * value))
+        index = int(max(0.0, min(1.0, value)) * 255.0)
+        return cls._heat_lut()[index]
 
     def _draw_selection(self, painter: QPainter, width: int, height: int) -> None:
         duration = self.duration_seconds()
