@@ -86,6 +86,23 @@ def read_wav(path: Path) -> AudioData:
     return AudioData(samples=samples, sample_rate=sample_rate)
 
 
+def wav_duration_seconds(path: Path) -> float:
+    """Return a PCM WAV's duration without decoding its samples.
+
+    Reads only the header (frame count / sample rate), so it is cheap enough to
+    gate the quadratic ``simple`` backend before it runs. Returns 0.0 if the
+    header cannot be read as a WAV.
+    """
+
+    try:
+        with wave.open(str(path), "rb") as wav:
+            sample_rate = wav.getframerate()
+            frame_count = wav.getnframes()
+    except (wave.Error, EOFError, OSError):
+        return 0.0
+    return frame_count / sample_rate if sample_rate > 0 else 0.0
+
+
 def _decode_pcm_frames(raw: bytes, channels: int, sample_width: int):
     """Decode interleaved PCM bytes to mono float samples in roughly [-1, 1].
 

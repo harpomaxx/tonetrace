@@ -12,6 +12,7 @@ from .analyzer import (
     BASIC_PITCH_ONSET_THRESHOLD,
     CQT_THRESHOLD,
     analyze_wav_to_midi,
+    wav_duration_seconds,
 )
 from .separator import (
     DEFAULT_SEGMENT_SECONDS,
@@ -21,6 +22,10 @@ from .separator import (
     read_audio_duration,
     separate_stems,
 )
+
+# Above this input duration the quadratic 'simple' backend is refused without
+# --force (it takes minutes on real audio and grows with duration squared).
+SIMPLE_BACKEND_MAX_SECONDS = 5.0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -42,6 +47,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("simple", "cqt", "basic-pitch"),
         default="simple",
         help="analysis backend to use: simple deterministic DSP, CQT/librosa, or Spotify Basic Pitch ML (default: simple)",
+    )
+    analyze_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="run the quadratic 'simple' backend even on long audio (>5s); it can take minutes",
     )
     add_analysis_tuning_arguments(analyze_parser)
     analyze_parser.set_defaults(handler=_handle_analyze)
@@ -149,6 +159,20 @@ def _handle_analyze(args: argparse.Namespace) -> int:
     if not input_audio.is_file():
         print(f"notegrabber: input audio is not a file: {input_audio}", file=sys.stderr)
         return 2
+
+    # The 'simple' backend is a quadratic pure-Python Goertzel correlation meant
+    # for tiny deterministic fixtures; on real audio it takes minutes and grows
+    # with the square of duration. Refuse it on long input unless --force.
+    if backend == "simple" and not args.force:
+        duration = wav_duration_seconds(input_audio)
+        if duration > SIMPLE_BACKEND_MAX_SECONDS:
+            print(
+                f"notegrabber: the 'simple' backend is a fixture-only baseline and is very slow on "
+                f"real audio ({duration:.0f}s input would take minutes). Use --backend cqt or "
+                f"--backend basic-pitch, or pass --force to run 'simple' anyway.",
+                file=sys.stderr,
+            )
+            return 2
 
     try:
         notes = analyze_wav_to_midi(
