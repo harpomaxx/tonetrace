@@ -89,6 +89,10 @@ class MainWindow(QMainWindow):
         # notes does not freeze the UI on every edit.
         self.preview_runs: list[tuple[QThread, MidiPreviewWorker]] = []
         self._preview_dir: Path | None = None
+        # The temp work dir of the current analysis result (heatmap.json, the
+        # rendered preview WAV, range WAVs). Removed once a newer analysis
+        # supersedes it or on close, so re-analyses do not pile up in /tmp.
+        self._analysis_dir: Path | None = None
         self._preview_request_id = 0
         self._pending_preview_notes: list[GuiMidiNote] | None = None
         self.preview_debounce_timer = QTimer(self)
@@ -533,6 +537,12 @@ class MainWindow(QMainWindow):
             self.midi_player.setSource(QUrl.fromLocalFile(str(result.rendered_midi_wav)))
         else:
             self.midi_player.setSource(QUrl())
+        # The player now points at the new result's WAV (or nothing), so the
+        # previous analysis's work dir is no longer referenced -- remove it before
+        # adopting the new one. Skip if a re-analysis reused the same dir.
+        if self._analysis_dir is not None and self._analysis_dir != result.work_dir:
+            shutil.rmtree(self._analysis_dir, ignore_errors=True)
+        self._analysis_dir = result.work_dir
         self.transport.set_playback_available(original=True, midi=result.rendered_midi_wav is not None)
         message = f"Analyzed {len(result.notes)} notes with {result.backend}."
         if result.render_error:
@@ -576,9 +586,16 @@ class MainWindow(QMainWindow):
         for thread, _worker in list(self.preview_runs):
             thread.quit()
             thread.wait(2000)
+        # Release the WAV the midi player holds (an analysis or edit-preview
+        # render) before removing the dirs those files live in.
+        self.midi_player.stop()
+        self.midi_player.setSource(QUrl())
         if self._preview_dir is not None:
             shutil.rmtree(self._preview_dir, ignore_errors=True)
             self._preview_dir = None
+        if self._analysis_dir is not None:
+            shutil.rmtree(self._analysis_dir, ignore_errors=True)
+            self._analysis_dir = None
         super().closeEvent(event)
 
     def _retune_from_controls(self) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -60,6 +61,11 @@ class AnalysisResult:
     analysis_start_seconds: float = 0.0
     analysis_duration_seconds: float | None = None
     midi_preview_offset_seconds: float = 0.0
+    # The temporary work directory holding midi_path, heatmap_path, and the
+    # rendered preview WAV. The window owns its lifetime and removes it once a
+    # newer analysis supersedes this one (or on close), so /tmp does not grow
+    # without bound across re-analyses.
+    work_dir: Path | None = None
 
 
 class AnalysisWorker(QObject):
@@ -77,6 +83,7 @@ class AnalysisWorker(QObject):
     def run(self) -> None:
         """Execute the analysis request."""
 
+        work_dir: Path | None = None
         try:
             self.progress.emit("Preparing analysis…")
             work_dir = Path(tempfile.mkdtemp(prefix="notegrabber-gui-"))
@@ -142,9 +149,14 @@ class AnalysisWorker(QObject):
                     analysis_start_seconds=offset_seconds if self.request.range_duration_seconds is not None else 0.0,
                     analysis_duration_seconds=self.request.range_duration_seconds,
                     midi_preview_offset_seconds=offset_seconds if self.request.range_duration_seconds is not None else 0.0,
+                    work_dir=work_dir,
                 )
             )
         except Exception as exc:  # pragma: no cover - exercised by manual GUI flows
+            # The result never reached the window, so the window will not own the
+            # work dir; drop it here rather than leaking it to /tmp.
+            if work_dir is not None:
+                shutil.rmtree(work_dir, ignore_errors=True)
             self.failed.emit(str(exc))
 
     def _range_start_seconds(self) -> float:
