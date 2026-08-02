@@ -52,13 +52,46 @@ def build_pitch_overview(
 
     try:
         import librosa  # type: ignore[import-not-found]
-        import numpy as np  # type: ignore[import-not-found]
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "Pitch overview requires librosa/numpy; reinstall the GUI with `python3 -m pip install -e '.[gui]'`."
         ) from exc
 
     audio, actual_sample_rate = librosa.load(audio_path, sr=sample_rate, mono=True)
+    return build_overview_from_samples(
+        audio,
+        actual_sample_rate,
+        frame_seconds=frame_seconds,
+        min_midi=min_midi,
+        bins=bins,
+        max_frames=max_frames,
+    )
+
+
+def build_overview_from_samples(
+    audio: "object",
+    sample_rate: int,
+    *,
+    frame_seconds: float = OVERVIEW_FRAME_SECONDS,
+    min_midi: int = OVERVIEW_MIN_MIDI,
+    bins: int = OVERVIEW_BINS,
+    max_frames: int = OVERVIEW_MAX_FRAMES,
+) -> PitchOverview:
+    """Build the overview CQT from an already-decoded mono buffer.
+
+    Split out from :func:`build_pitch_overview` so one shared decode can feed both
+    the waveform preview and this overview instead of decoding the file twice.
+    """
+
+    try:
+        import librosa  # type: ignore[import-not-found]
+        import numpy as np  # type: ignore[import-not-found]
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Pitch overview requires librosa/numpy; reinstall the GUI with `python3 -m pip install -e '.[gui]'`."
+        ) from exc
+
+    actual_sample_rate = int(sample_rate)
     duration_seconds = float(len(audio) / actual_sample_rate) if actual_sample_rate > 0 else 0.0
     if len(audio) == 0 or duration_seconds <= 0:
         raise ValueError("audio file contains no decoded samples for overview")
