@@ -38,32 +38,38 @@ def _render_note(freq: float, duration: float, velocity: float, bend_semitones=N
     import numpy as np
 
     n = max(1, int(duration * SAMPLE_RATE))
-    t = np.arange(n) / SAMPLE_RATE
+    t = np.arange(n, dtype=np.float32) / SAMPLE_RATE
 
+    # Phase must accumulate in float64: float32 cumsum drifts audibly over a long
+    # note. The common no-bend path has a closed-form phase (2*pi*freq*t) that
+    # needs no cumsum; only a real pitch bend needs the integrated path.
     if bend_semitones:
-        times = np.array([p[0] for p in bend_semitones], dtype="float64")
-        offsets = np.array([p[1] for p in bend_semitones], dtype="float64")
+        t64 = np.arange(n, dtype=np.float64) / SAMPLE_RATE
+        times = np.array([p[0] for p in bend_semitones], dtype=np.float64)
+        offsets = np.array([p[1] for p in bend_semitones], dtype=np.float64)
         # Step-and-hold interpolation of the bend offset onto every sample, then a
         # frequency multiplier per sample.
-        semis = np.interp(t, times, offsets, left=offsets[0], right=offsets[-1])
+        semis = np.interp(t64, times, offsets, left=offsets[0], right=offsets[-1])
         inst_freq = freq * (2.0 ** (semis / 12.0))
+        phase = (2 * np.pi * np.cumsum(inst_freq) / SAMPLE_RATE).astype(np.float32)
     else:
-        inst_freq = np.full(n, freq)
+        phase = (np.arange(n, dtype=np.float64) * (2 * np.pi * freq / SAMPLE_RATE)).astype(np.float32)
 
-    # Integrate instantaneous frequency to phase so a moving pitch stays continuous.
-    phase = 2 * np.pi * np.cumsum(inst_freq) / SAMPLE_RATE
-    wave_data = 1.0 * np.sin(phase) + 0.35 * np.sin(2 * phase) + 0.15 * np.sin(3 * phase)
+    # Fundamental + one harmonic. Dropping the (weak) 3rd partial and running the
+    # sines in float32 roughly halves the per-note synthesis cost.
+    wave_data = np.sin(phase)
+    wave_data += 0.35 * np.sin(2.0 * phase)
 
-    env = np.ones(n)
+    env = np.ones(n, dtype=np.float32)
     attack = min(int(0.01 * SAMPLE_RATE), n)
     release = min(int(0.08 * SAMPLE_RATE), n)
     if attack > 0:
-        env[:attack] = np.linspace(0.0, 1.0, attack)
+        env[:attack] = np.linspace(0.0, 1.0, attack, dtype=np.float32)
     if release > 0:
-        env[-release:] *= np.linspace(1.0, 0.0, release)
+        env[-release:] *= np.linspace(1.0, 0.0, release, dtype=np.float32)
     env *= np.exp(-1.5 * t / max(duration, 1e-3)) * 0.6 + 0.4
 
-    return (wave_data * env * velocity).astype("float32")
+    return (wave_data * env * velocity).astype(np.float32)
 
 
 def _read_note_events(midi_path: Path):

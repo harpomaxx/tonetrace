@@ -60,3 +60,18 @@ def test_note_without_bend_holds_a_steady_pitch(tmp_path):
     f_late = _peak_freq(raw[int(1.25 * sr) : int(1.25 * sr) + win], sr)
     semitones = abs(12 * np.log2(f_late / f_early))
     assert semitones < 0.3, f"pitch drifted {semitones:.2f} semitones on a plain note"
+
+
+def test_long_plain_note_does_not_drift_with_float32_phase(tmp_path):
+    """The cheapened synth (issue #26) runs sines in float32; a plain note uses a
+    closed-form phase (no cumsum) so even a long note must not detune. This guards
+    against reintroducing float32 cumsum drift."""
+
+    dur_ticks = round(20.0 * TICKS_PER_SECOND)
+    raw, sr = _render(tmp_path, MidiNote(pitch=69, start_tick=0, duration_ticks=dur_ticks))
+
+    win = 8192
+    f_early = _peak_freq(raw[int(0.5 * sr) : int(0.5 * sr) + win], sr)
+    f_late = _peak_freq(raw[int(18.0 * sr) : int(18.0 * sr) + win], sr)
+    semitones = abs(12 * np.log2(f_late / f_early))
+    assert semitones < 0.05, f"long note drifted {semitones:.3f} semitones"
