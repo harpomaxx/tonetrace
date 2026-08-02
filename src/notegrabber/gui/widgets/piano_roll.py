@@ -45,6 +45,10 @@ class PianoRollWidget(QWidget):
         self.notes: list[GuiMidiNote] = []
         self.full_duration_seconds = 0.0
         self._pitch_to_row: dict[int, int] = {}
+        # note indices bucketed by their pitch row, so hover hit-testing scans
+        # only the handful of notes on the row under the cursor instead of every
+        # note. Rebuilt in set_data; patched in preview_note_edit during a drag.
+        self._notes_by_row: dict[int, list[int]] = {}
         # Cached QImage of the zoomed-out heatmap (one canvas pixel per column,
         # one image row per note) plus the params it was built under, so a repaint
         # can blit it instead of re-drawing every cell. See _heatmap_image().
@@ -111,6 +115,7 @@ class PianoRollWidget(QWidget):
                 if heatmap is not None
                 else {}
             )
+        self._rebuild_note_index()
         if self.selected_note_index is not None and self.selected_note_index >= len(notes):
             self.selected_note_index = None
         if self.hover_note_index is not None and self.hover_note_index >= len(notes):
@@ -215,9 +220,20 @@ class PianoRollWidget(QWidget):
 
         if index < 0 or index >= len(self.notes) or self.heatmap is None:
             return
-        old_rect = self._note_rect(self.notes[index])
+        old_note = self.notes[index]
+        old_rect = self._note_rect(old_note)
         self.notes[index] = note
         new_rect = self._note_rect(note)
+        # Keep the row buckets consistent if the drag moved this note's pitch.
+        old_row = self._pitch_to_row.get(old_note.pitch)
+        new_row = self._pitch_to_row.get(note.pitch)
+        if old_row != new_row:
+            if old_row is not None:
+                bucket = self._notes_by_row.get(old_row)
+                if bucket is not None and index in bucket:
+                    bucket.remove(index)
+            if new_row is not None:
+                self._notes_by_row.setdefault(new_row, []).append(index)
         dirty = self._union_note_dirty_rect(old_rect, new_rect)
         if dirty is None:
             self.update()
@@ -889,12 +905,35 @@ class PianoRollWidget(QWidget):
         hit = self._note_hit_at(x, y)
         return hit[0] if hit is not None else None
 
+    def _rebuild_note_index(self) -> None:
+        """Bucket note indices by pitch row for O(row) hover hit-testing."""
+
+        buckets: dict[int, list[int]] = {}
+        for index, note in enumerate(self.notes):
+            row = self._pitch_to_row.get(note.pitch)
+            if row is not None:
+                buckets.setdefault(row, []).append(index)
+        self._notes_by_row = buckets
+
+    def _row_for_y(self, y: float) -> int | None:
+        """Map a canvas y to the pitch row drawn there, or None if off the grid."""
+
+        if self.heatmap is None or self.note_height <= 0:
+            return None
+        row_from_top = int(y // self.note_height)
+        row = self.heatmap.note_count - 1 - row_from_top
+        return row if 0 <= row < self.heatmap.note_count else None
+
     def _note_hit_at(self, x: float, y: float) -> tuple[int, str] | None:
         if self.heatmap is None or not self.show_notes:
             return None
+        row = self._row_for_y(y)
+        if row is None:
+            return None
         handle_width = 7.0
-        # Reverse so the top-most/latest-drawn overlapping note wins.
-        for index in range(len(self.notes) - 1, -1, -1):
+        # Only notes on the row under the cursor can be hit; scan that bucket in
+        # reverse so the top-most/latest-drawn overlapping note wins.
+        for index in reversed(self._notes_by_row.get(row, ())):
             rect = self._note_rect(self.notes[index])
             if rect is None or not rect.contains(x, y):
                 continue
