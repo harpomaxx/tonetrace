@@ -35,7 +35,7 @@ from .edit_history import EditHistory
 from .transcription_stats import compute_stats
 from .midi_preview_worker import MidiPreviewRequest, MidiPreviewResult, MidiPreviewWorker, render_midi_preview
 from .overview_worker import OverviewResult, OverviewWorker
-from .state import GuiMidiNote, ProjectState, delete_gui_note, gui_notes_to_midi, retune_notes_from_heatmap, update_gui_note
+from .state import GuiMidiNote, ProjectState, delete_gui_note, gui_notes_to_midi, normalized_gui_note, retune_notes_from_heatmap
 from .theme import THEMES, active_theme, build_stylesheet, polish_button, set_active_theme
 from .widgets.collapsible import CollapsibleSection
 from .widgets.controls import AnalysisControls
@@ -742,28 +742,30 @@ class MainWindow(QMainWindow):
         status_prefix: str,
         update_preview: bool,
     ) -> None:
-        current = list(self.state.current_notes)
-        if index < 0 or index >= len(current):
+        if index < 0 or index >= len(self.state.current_notes):
             return
-        # Snapshot the note list once at the start of an edit gesture (before any
-        # mutation), so a multi-tick drag records a single undo step for the whole
-        # gesture rather than one per intermediate move.
-        if self._pre_edit_snapshot is None:
-            self._pre_edit_snapshot = current
-        self.state.tuned_notes = update_gui_note(
-            current,
-            index,
-            start_seconds=start_seconds,
-            duration_seconds=duration_seconds,
-            pitch=pitch,
-            velocity=velocity,
+        edited_note = normalized_gui_note(
+            replace(
+                self.state.current_notes[index],
+                start_seconds=start_seconds,
+                duration_seconds=duration_seconds,
+                pitch=pitch,
+                velocity=velocity,
+            )
         )
+        if self._pre_edit_snapshot is None:
+            # First tick of an edit gesture: snapshot the pre-mutation list once
+            # (so a multi-tick drag records a single undo step) and adopt a fresh
+            # working list we can mutate in place for the rest of the gesture.
+            self._pre_edit_snapshot = list(self.state.current_notes)
+            self.state.tuned_notes = list(self.state.current_notes)
+        # Mutate the working list by index -- no per-tick full-list copy.
+        self.state.tuned_notes[index] = edited_note
         self.selected_note_index = index
         if not update_preview:
             # Uncommitted drag: update just the dragged note with a partial
             # repaint and refresh the inspector, skipping the full set_data
             # (canvas resize + full repaint) and the sequence-table rebuild.
-            edited_note = self.state.tuned_notes[index]
             self.piano_roll.preview_note_edit(index, edited_note)
             self._populate_note_inspector(edited_note)
             self.selected_note_label.setText(self._note_summary(edited_note))
