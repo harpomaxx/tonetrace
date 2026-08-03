@@ -125,9 +125,14 @@ class MainWindow(QMainWindow):
         self.sequence = SequenceWidget()
         self.transport = TransportWidget()
         self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName("jobProgress")
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setMaximumHeight(6)
-        self.progress_bar.hide()
+        # The bar stays laid out for the window's whole life and is only styled
+        # invisible when idle. Hiding it collapsed its row and shifted the
+        # waveform and piano roll up/down on every job, which made editing notes
+        # jumpy -- the click target moved mid-gesture.
+        self._set_progress_idle(True)
         # File name shown as a prefix on the stats strip (no longer its own row).
         self._current_file_name = ""
         self.file_label = QLabel("No audio loaded")
@@ -295,7 +300,15 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(action_row)
         # The one status line: themed LED strip, always on screen.
         top_layout.addWidget(self.transport.status_label)
-        top_layout.addWidget(self.progress_bar)
+        # The progress bar sits in a slot of fixed height so the row is reserved
+        # whether or not a job is running; see _set_progress_idle.
+        progress_slot = QWidget()
+        progress_slot.setFixedHeight(self.progress_bar.maximumHeight())
+        progress_slot_layout = QVBoxLayout(progress_slot)
+        progress_slot_layout.setContentsMargins(0, 0, 0, 0)
+        progress_slot_layout.setSpacing(0)
+        progress_slot_layout.addWidget(self.progress_bar)
+        top_layout.addWidget(progress_slot)
         # The loaded file name folds into the stats strip rather than owning its own
         # row (it is reference info, not a section). The waveform sits below it.
         self.stats_label = QLabel("Notes 0  ·  0:00  ·  — BPM  ·  —")
@@ -774,7 +787,7 @@ class MainWindow(QMainWindow):
         self.controls.set_busy(analysis_running)
         self.controls.set_cancellable(cancellable_running)
         if self._has_active_jobs():
-            self.progress_bar.show()
+            self._set_progress_idle(False)
         else:
             self._hide_progress()
 
@@ -786,19 +799,40 @@ class MainWindow(QMainWindow):
         if progress.total is not None and progress.total > 0 and progress.completed is not None:
             self.progress_bar.setRange(0, int(progress.total))
             self.progress_bar.setValue(max(0, min(int(progress.completed), int(progress.total))))
-            self.progress_bar.show()
+            self._set_progress_idle(False)
         else:
             self._show_progress(indeterminate=True)
         self._set_status(progress.message)
 
+    def _set_progress_idle(self, idle: bool) -> None:
+        """Show or hide the progress bar *without* changing the layout.
+
+        The bar lives in a fixed-height slot that stays in the layout whether or
+        not the bar is drawn, so nothing below it -- including the piano roll --
+        moves when a job starts or finishes.
+
+        The bar's own visibility is what toggles. Restyling it to be transparent
+        instead does not work: once the MainWindow's themed stylesheet has
+        applied, re-setting the child's own stylesheet is ignored, leaving the
+        previous groove and chunk painted on screen.
+        """
+
+        if self.progress_bar.property("idle") == idle:
+            return
+        self.progress_bar.setProperty("idle", idle)
+        self.progress_bar.setVisible(not idle)
+
     def _show_progress(self, *, indeterminate: bool) -> None:
         if indeterminate:
             self.progress_bar.setRange(0, 0)
-        self.progress_bar.show()
+        self._set_progress_idle(False)
 
     def _hide_progress(self) -> None:
         if not self._has_active_jobs():
-            self.progress_bar.hide()
+            self._set_progress_idle(True)
+            # Reset *after* going idle: an indeterminate bar (range 0,0) keeps
+            # animating a chunk, and a determinate one leaves its last fill
+            # painted, so the groove must also be emptied to actually go blank.
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
 
