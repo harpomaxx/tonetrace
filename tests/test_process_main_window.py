@@ -113,7 +113,9 @@ def test_analysis_busy_completion_leaves_audio_cancel_enabled() -> None:
     window._refresh_job_ui()
     assert not window.controls.analyze_button.isEnabled()
     assert window.controls.cancel_button.isEnabled()
-    assert window.progress_bar.isVisible()
+    # The bar is always laid out (so the roll never shifts); "active" is the
+    # idle property being off, not visibility.
+    assert window.progress_bar.property("idle") is False
 
     window._analysis_job_done(window._analysis_generation, analysis_job)
     # This synthetic test invokes only the window's done handler; in production
@@ -123,7 +125,8 @@ def test_analysis_busy_completion_leaves_audio_cancel_enabled() -> None:
 
     assert window.controls.analyze_button.isEnabled()
     assert window.controls.cancel_button.isEnabled()
-    assert window.progress_bar.isVisible()
+    # The audio-load job is still running, so progress stays active.
+    assert window.progress_bar.property("idle") is False
     audio_job.cleanup()
     window.audio_load_job = None
     window._refresh_job_ui()
@@ -205,7 +208,7 @@ def test_progress_bar_is_themed_and_determinate_progress_visible() -> None:
 
     window._job_progress(JobProgress(kind="analysis", stage="finalizing", message="Almost done", completed=2, total=3), priority="analysis")
 
-    assert window.progress_bar.isVisible()
+    assert window.progress_bar.property("idle") is False
     assert window.progress_bar.maximum() == 3
     assert window.progress_bar.value() == 2
     assert window.statusBar().currentMessage() == "Almost done"
