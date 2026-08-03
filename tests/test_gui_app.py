@@ -1196,8 +1196,8 @@ def test_main_window_edit_selected_note_rerenders_midi_preview_offscreen(monkeyp
 
 
 @pytest.mark.gui
-def test_midi_preview_render_is_debounced_and_supersedes_offscreen(monkeypatch, tmp_path) -> None:
-    """A burst of edits collapses to one off-thread render; stale results drop."""
+def test_midi_preview_render_is_debounced_and_supersedes_offscreen(tmp_path) -> None:
+    """A burst of edits collapses to one process render; stale results drop."""
 
     pytest.importorskip("PySide6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1205,18 +1205,9 @@ def test_midi_preview_render_is_debounced_and_supersedes_offscreen(monkeypatch, 
     import time
 
     from PySide6.QtWidgets import QApplication
-    import notegrabber.gui.midi_preview_worker as preview_module
+    from notegrabber.gui.midi_preview_worker import MidiPreviewResult
     from notegrabber.gui.main_window import MainWindow
     from notegrabber.gui.state import GuiHeatmap, GuiMidiNote
-
-    render_calls = []
-
-    def fake_render_midi_to_wav(_midi_path, wav_path):
-        render_calls.append(1)
-        wav_path.write_bytes(b"preview")
-        return wav_path, None
-
-    monkeypatch.setattr(preview_module, "render_midi_to_wav", fake_render_midi_to_wav)
 
     app = QApplication.instance() or QApplication([])
     window = MainWindow(render_midi=True)
@@ -1237,26 +1228,39 @@ def test_midi_preview_render_is_debounced_and_supersedes_offscreen(monkeypatch, 
         window._refresh_midi_preview(notes)
 
     assert window._preview_request_id == 5
-    assert render_calls == []  # nothing rendered yet; all debounced
+    assert window.preview_jobs == []  # nothing rendered yet; all debounced
 
-    # Let the debounce fire and the worker thread finish.
-    deadline = time.time() + 3.0
-    while time.time() < deadline and (not render_calls or window.preview_runs):
+    # Let the debounce fire and the isolated worker process finish.
+    deadline = time.time() + 5.0
+    while time.time() < deadline and (window.state.rendered_midi_wav is None or window.preview_jobs):
         app.processEvents()
         time.sleep(0.02)
     for _ in range(20):
         app.processEvents()
         time.sleep(0.01)
 
-    assert len(render_calls) == 1  # the burst collapsed into a single render
+    assert window.preview_jobs == []
     assert window.state.rendered_midi_wav is not None
+    assert window.state.rendered_midi_wav.exists()
+    first_preview_dir = window.state.rendered_midi_wav.parent
     assert "re-rendered" in window.statusBar().currentMessage()
+
+    # A later generation gets a distinct directory/path and removes the old
+    # accepted preview directory after the player source is swapped.
+    window._refresh_midi_preview([GuiMidiNote(pitch=64, start_seconds=0.0, duration_seconds=0.3, velocity=90)])
+    deadline = time.time() + 5.0
+    while time.time() < deadline and (window.state.rendered_midi_wav is None or window.state.rendered_midi_wav.parent == first_preview_dir or window.preview_jobs):
+        app.processEvents()
+        time.sleep(0.02)
+    assert window.state.rendered_midi_wav is not None
+    assert window.state.rendered_midi_wav.parent != first_preview_dir
+    assert not first_preview_dir.exists()
 
     # A stale completion (older render id) must be ignored.
     window._preview_request_id = 99
     window.state.rendered_midi_wav = None
-    stale = preview_module.MidiPreviewResult(render_id=5, rendered_wav=tmp_path / "stale.wav")
-    window._preview_render_finished(stale)
+    stale = MidiPreviewResult(render_id=5, rendered_wav=tmp_path / "stale.wav")
+    window._preview_render_finished(stale, tmp_path)
     assert window.state.rendered_midi_wav is None  # dropped, not applied
 
     window.close()

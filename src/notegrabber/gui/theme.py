@@ -457,6 +457,19 @@ QSlider::handle:horizontal {
     border-radius: 8px;
     border: 2px solid #ffb13d;
 }
+QProgressBar {
+    background: #101722;
+    border: 1px solid #273040;
+    border-radius: 3px;
+    min-height: 6px;
+    max-height: 6px;
+}
+QProgressBar::chunk {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #d44822,
+        stop:1 #ffd64f);
+    border-radius: 3px;
+}
 QCheckBox {
     spacing: 8px;
     color: #d3deed;
@@ -1024,6 +1037,19 @@ QSlider::handle:horizontal {{
     margin: -5px 0;
     border-radius: 8px;
     border: 2px solid {accent};
+}}
+QProgressBar {{
+    background: {panel_lo};
+    border: 1px solid {border};
+    border-radius: 3px;
+    min-height: 6px;
+    max-height: 6px;
+}}
+QProgressBar::chunk {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {accent_deep},
+        stop:1 {accent_hi});
+    border-radius: 3px;
 }}
 QCheckBox {{
     spacing: 8px;

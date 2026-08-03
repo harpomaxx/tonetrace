@@ -48,6 +48,7 @@ class AnalysisControls(QWidget):
     """Left-side backend and transcription controls."""
 
     analyze_requested = Signal()
+    cancel_requested = Signal()
     export_requested = Signal()
     delete_requested = Signal()
     open_requested = Signal()
@@ -87,12 +88,15 @@ class AnalysisControls(QWidget):
 
         self.open_button = self._action_button("Open", role="secondary", icon_name="folder")
         self.analyze_button = self._action_button("Analyze", role="primary", icon_name="analyze")
+        self.cancel_button = self._action_button("Cancel", role="danger", icon_name="stop")
         self.export_button = self._action_button("Export", role="primary", icon_name="export")
         self.delete_button = self._action_button("Delete", role="danger", icon_name="trash")
         self.open_button.setToolTip("Choose an audio file to transcribe")
         self.analyze_button.setToolTip("Run the selected transcription backend")
+        self.cancel_button.setToolTip("Cancel the current analysis or background audio overview")
         self.export_button.setToolTip("Export the current edited note list as MIDI")
         self.delete_button.setToolTip("Remove the selected MIDI note from the edited list")
+        self.cancel_button.setEnabled(False)
         self.export_button.setEnabled(False)
         self.delete_button.setEnabled(False)
 
@@ -115,6 +119,7 @@ class AnalysisControls(QWidget):
 
         self.open_button.clicked.connect(self.open_requested.emit)
         self.analyze_button.clicked.connect(self.analyze_requested.emit)
+        self.cancel_button.clicked.connect(self.cancel_requested.emit)
         self.export_button.clicked.connect(self.export_requested.emit)
         self.delete_button.clicked.connect(self.delete_requested.emit)
         self.show_overlay.toggled.connect(self.overlay_toggled.emit)
@@ -173,6 +178,10 @@ class AnalysisControls(QWidget):
         self.range_enabled.setEnabled(not busy)
         self.range_start.setEnabled(not busy)
         self.range_duration.setEnabled(not busy)
+        self.cancel_button.setEnabled(busy)
+
+    def set_cancellable(self, enabled: bool) -> None:
+        self.cancel_button.setEnabled(enabled)
 
     def set_can_export(self, enabled: bool) -> None:
         self.export_button.setEnabled(enabled)
@@ -197,6 +206,7 @@ class AnalysisControls(QWidget):
         row.setSpacing(8)
         row.addWidget(self.open_button)
         row.addWidget(self.analyze_button)
+        row.addWidget(self.cancel_button)
         row.addWidget(self.delete_button)
         row.addWidget(self.export_button)
         return group

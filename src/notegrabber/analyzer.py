@@ -441,6 +441,8 @@ def analyze_basic_pitch_data(
             import basic_pitch
             from basic_pitch import constants as basic_pitch_constants
             from basic_pitch.constants import AUDIO_SAMPLE_RATE, FFT_HOP
+            import onnxruntime as ort  # type: ignore[import-not-found]
+            from basic_pitch.inference import Model as BasicPitchModel
             from basic_pitch.inference import run_inference
             from basic_pitch.note_creation import model_output_to_notes
     except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional environment
@@ -453,7 +455,16 @@ def analyze_basic_pitch_data(
     if not model_path.exists():
         raise RuntimeError("Basic Pitch ONNX model was not found; install `basic-pitch[onnx]`")
 
-    model_output = run_inference(input_audio, model_path)
+    # Basic Pitch's generic Model loader probes TensorFlow Lite before ONNX,
+    # even when handed an ``.onnx`` path. On systems with tflite-runtime that
+    # probe can abort in native code after librosa has extracted an analysis
+    # range, rather than raising a catchable Python exception. Construct the
+    # Basic Pitch model wrapper explicitly around ONNX Runtime so the declared
+    # Basic Pitch/ONNX backend never touches an incompatible native runtime.
+    model = BasicPitchModel.__new__(BasicPitchModel)
+    model.model_type = BasicPitchModel.MODEL_TYPES.ONNX
+    model.model = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+    model_output = run_inference(input_audio, model)
     # Basic Pitch measures minimum note length in frames; convert from seconds the
     # same way predict() does (round to whole frames at the annotation frame rate).
     min_note_len = max(1, round(min_duration_seconds * (AUDIO_SAMPLE_RATE / FFT_HOP)))

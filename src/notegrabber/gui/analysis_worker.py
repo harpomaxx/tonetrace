@@ -68,7 +68,11 @@ class AnalysisResult:
 
 
 class AnalysisWorker(QObject):
-    """Run analysis in a Qt thread and emit a GUI-friendly result."""
+    """Run analysis in a Qt thread and emit a GUI-friendly result.
+
+    Kept for synchronous compatibility tests. The GUI MainWindow runs the same
+    pure function in an isolated child process instead of owning this QThread.
+    """
 
     finished = Signal(object)
     failed = Signal(str)
@@ -84,71 +88,8 @@ class AnalysisWorker(QObject):
 
         work_dir: Path | None = None
         try:
-            self.progress.emit("Preparing analysis…")
             work_dir = Path(tempfile.mkdtemp(prefix="notegrabber-gui-"))
-            midi_path = work_dir / "analysis.mid"
-            rendered_path = work_dir / "analysis.wav"
-
-            analysis_audio_path = self.request.audio_path
-            offset_seconds = self._range_start_seconds()
-            if self.request.range_duration_seconds is not None:
-                self.progress.emit(
-                    f"Preparing {self.request.range_duration_seconds:.1f}s range starting at {offset_seconds:.1f}s…"
-                )
-                analysis_audio_path = _extract_audio_range(
-                    self.request.audio_path,
-                    work_dir / "analysis-range.wav",
-                    start_seconds=offset_seconds,
-                    duration_seconds=self.request.range_duration_seconds,
-                )
-
-            self.progress.emit(f"Analyzing with {self.request.backend}…")
-            # Get compact heatmap data in memory: no JSON document or nested-list
-            # materialization on the GUI path.
-            local_midi_notes, local_heatmap = analyze_wav_to_midi_with_heatmap_data(
-                analysis_audio_path,
-                midi_path,
-                backend=self.request.backend,
-                threshold=self.request.threshold,
-                onset_threshold=self.request.onset_threshold,
-                frame_threshold=self.request.frame_threshold,
-                min_duration_seconds=self.request.min_duration_seconds,
-            )
-            preview_midi_notes = _clip_midi_notes_to_duration(local_midi_notes, self.request.range_duration_seconds)
-            midi_notes = local_midi_notes
-            heatmap = local_heatmap
-            if offset_seconds:
-                midi_notes = _offset_midi_notes(local_midi_notes, offset_seconds)
-                heatmap = local_heatmap.with_time_offset(offset_seconds)
-                write_midi(midi_path, midi_notes)
-            notes = midi_notes_to_gui(midi_notes, source=self.request.backend)
-
-            rendered_midi_wav: Path | None = None
-            render_error: str | None = None
-            if self.request.render_midi:
-                self.progress.emit("Rendering MIDI preview…")
-                preview_midi_path = midi_path
-                if self.request.range_duration_seconds is not None:
-                    preview_midi_path = work_dir / "analysis-preview-local.mid"
-                    write_midi(preview_midi_path, preview_midi_notes)
-                rendered_midi_wav, render_error = render_midi_to_wav(preview_midi_path, rendered_path)
-
-            self.finished.emit(
-                AnalysisResult(
-                    audio_path=self.request.audio_path,
-                    backend=self.request.backend,
-                    midi_path=midi_path,
-                    heatmap_path=None,
-                    rendered_midi_wav=rendered_midi_wav,
-                    render_error=render_error,
-                    notes=notes,
-                    heatmap=heatmap,
-                    analysis_start_seconds=offset_seconds if self.request.range_duration_seconds is not None else 0.0,
-                    analysis_duration_seconds=self.request.range_duration_seconds,
-                    midi_preview_offset_seconds=offset_seconds if self.request.range_duration_seconds is not None else 0.0,
-                    work_dir=work_dir,
-                )
-            )
+            self.finished.emit(run_analysis_request(self.request, work_dir, progress=self.progress.emit))
         except Exception as exc:  # pragma: no cover - exercised by manual GUI flows
             # The result never reached the window, so the window will not own the
             # work dir; drop it here rather than leaking it to /tmp.
@@ -156,8 +97,71 @@ class AnalysisWorker(QObject):
                 shutil.rmtree(work_dir, ignore_errors=True)
             self.failed.emit(str(exc))
 
-    def _range_start_seconds(self) -> float:
-        return max(0.0, float(self.request.range_start_seconds))
+
+def run_analysis_request(request: AnalysisRequest, work_dir: Path, *, progress=lambda _message: None) -> AnalysisResult:
+    """Run one analysis request in ``work_dir`` and return a GUI result."""
+
+    progress("Preparing analysis…")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    midi_path = work_dir / "analysis.mid"
+    rendered_path = work_dir / "analysis.wav"
+
+    analysis_audio_path = request.audio_path
+    offset_seconds = max(0.0, float(request.range_start_seconds))
+    if request.range_duration_seconds is not None:
+        progress(f"Preparing {request.range_duration_seconds:.1f}s range starting at {offset_seconds:.1f}s…")
+        analysis_audio_path = _extract_audio_range(
+            request.audio_path,
+            work_dir / "analysis-range.wav",
+            start_seconds=offset_seconds,
+            duration_seconds=request.range_duration_seconds,
+        )
+
+    progress(f"Analyzing with {request.backend}…")
+    # Get compact heatmap data in memory: no JSON document or nested-list
+    # materialization on the GUI path.
+    local_midi_notes, local_heatmap = analyze_wav_to_midi_with_heatmap_data(
+        analysis_audio_path,
+        midi_path,
+        backend=request.backend,
+        threshold=request.threshold,
+        onset_threshold=request.onset_threshold,
+        frame_threshold=request.frame_threshold,
+        min_duration_seconds=request.min_duration_seconds,
+    )
+    preview_midi_notes = _clip_midi_notes_to_duration(local_midi_notes, request.range_duration_seconds)
+    midi_notes = local_midi_notes
+    heatmap = local_heatmap
+    if offset_seconds:
+        midi_notes = _offset_midi_notes(local_midi_notes, offset_seconds)
+        heatmap = local_heatmap.with_time_offset(offset_seconds)
+        write_midi(midi_path, midi_notes)
+    notes = midi_notes_to_gui(midi_notes, source=request.backend)
+
+    rendered_midi_wav: Path | None = None
+    render_error: str | None = None
+    if request.render_midi:
+        progress("Rendering MIDI preview…")
+        preview_midi_path = midi_path
+        if request.range_duration_seconds is not None:
+            preview_midi_path = work_dir / "analysis-preview-local.mid"
+            write_midi(preview_midi_path, preview_midi_notes)
+        rendered_midi_wav, render_error = render_midi_to_wav(preview_midi_path, rendered_path)
+
+    return AnalysisResult(
+        audio_path=request.audio_path,
+        backend=request.backend,
+        midi_path=midi_path,
+        heatmap_path=None,
+        rendered_midi_wav=rendered_midi_wav,
+        render_error=render_error,
+        notes=notes,
+        heatmap=heatmap,
+        analysis_start_seconds=offset_seconds if request.range_duration_seconds is not None else 0.0,
+        analysis_duration_seconds=request.range_duration_seconds,
+        midi_preview_offset_seconds=offset_seconds if request.range_duration_seconds is not None else 0.0,
+        work_dir=work_dir,
+    )
 
 
 def _offset_midi_notes(notes: list[MidiNote], offset_seconds: float) -> list[MidiNote]:

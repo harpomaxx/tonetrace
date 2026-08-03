@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +67,42 @@ def test_basic_pitch_backend_writes_ml_heatmap_schema(tmp_path: Path) -> None:
     assert heatmap["frames"], "Basic Pitch backend should emit at least one probability frame"
     assert all(len(frame["activations"]) == len(EXPECTED_MIDI_NOTES) for frame in heatmap["frames"])
     assert all(0.0 <= activation <= 1.0 for frame in heatmap["frames"] for activation in frame["activations"])
+
+
+@pytest.mark.basic_pitch
+def test_basic_pitch_range_extraction_uses_onnx_without_native_runtime_abort(tmp_path: Path) -> None:
+    """Range extraction before inference must not trigger Basic Pitch's TFLite probe.
+
+    Keep this in a subprocess because the regression is a native SIGABRT/SIGSEGV,
+    not a catchable Python exception. A failure should fail this test without
+    taking down the complete pytest process.
+    """
+
+    input_wav = write_single_note_wav(tmp_path / "range-source.wav", note=69, duration_seconds=3.0)
+    range_wav = tmp_path / "range.wav"
+    script = """
+from pathlib import Path
+import sys
+from notegrabber.analyzer import analyze_basic_pitch_data
+from notegrabber.gui.analysis_worker import _extract_audio_range
+source, extracted = map(Path, sys.argv[1:3])
+_extract_audio_range(source, extracted, start_seconds=0.5, duration_seconds=1.0)
+notes, heatmap = analyze_basic_pitch_data(extracted)
+assert notes
+assert heatmap.frame_count > 0
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(input_wav), str(range_wav)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=90,
+    )
+
+    assert result.returncode == 0, (
+        f"Basic Pitch range subprocess exited {result.returncode}\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
 
 
 @pytest.mark.cli

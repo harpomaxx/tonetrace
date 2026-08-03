@@ -100,7 +100,7 @@ Near-term native GUI focus:
 
 - continue playback/playhead sync edge cases (edited MIDI preview, Qt backend stall/buffering behavior on large files); smooth interpolated sync, full-song timeline mapping, and follow-scroll are implemented
 - improve heatmap zoom/navigation, especially zoom-out behavior, cursor-centered Ctrl+wheel zoom, and fit-to-selection/full-song actions
-- improve speed/responsiveness for large files: the heatmap, waveform, and overview paints are now numpy-vectorized, the per-drag repaint is partial, and the MIDI-preview render runs off the UI thread; still pending are cancel/progress/LOD caching (see the [GitHub issues](https://github.com/harpomaxx/tonetrace/issues))
+- improve speed/responsiveness for large files: heatmap storage/paint, waveform, and overview paths are numpy-vectorized; per-drag repaint is partial; and audio loading, transcription, and MIDI-preview rendering run in cancellable isolated processes with stage progress and clean shutdown. Optional finer-grained backend progress and LOD caching remain future work (see the [GitHub issues](https://github.com/harpomaxx/tonetrace/issues))
 - continue UI polish for the sampler workflow and selected-region editing
 
 Plugin formats such as VST/LV2/CLAP are not implemented yet.
