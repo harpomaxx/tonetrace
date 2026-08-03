@@ -38,7 +38,7 @@ from .edit_history import EditHistory
 from .transcription_stats import compute_stats
 from .midi_preview_worker import MidiPreviewRequest, MidiPreviewResult, render_midi_preview
 from .process_jobs import JobArtifact, JobProgress, ProcessJob
-from .state import GuiMidiNote, ProjectState, add_gui_note, delete_gui_note, gui_notes_to_midi, normalized_gui_note, retune_notes_from_heatmap
+from .state import GuiMidiNote, ProjectState, add_gui_note, delete_gui_notes, gui_notes_to_midi, normalized_gui_note, retune_notes_from_heatmap
 from .theme import THEMES, active_theme, build_stylesheet, polish_button, set_active_theme
 from .widgets.collapsible import CollapsibleSection
 from .widgets.controls import AnalysisControls
@@ -86,6 +86,9 @@ class MainWindow(QMainWindow):
         self._stale_jobs: list[ProcessJob] = []
         self._analysis_settings_by_generation: dict[int, tuple[BackendName, float, float, float, float]] = {}
         self.selected_note_index: int | None = None
+        # Mirrors the piano roll's selection set; selected_note_index stays as
+        # the "exactly one note" view of it for the inspector (issue #35).
+        self.selected_indices: set[int] = set()
         self.playback_mode = "stopped"
         self.playback_timer = QTimer(self)
         self.playback_timer.setInterval(16)
@@ -424,6 +427,7 @@ class MainWindow(QMainWindow):
         self.piano_roll.note_selected.connect(self._select_note)
         self.piano_roll.note_edited.connect(self._edit_note_from_piano_roll)
         self.piano_roll.note_created.connect(self._create_note_from_piano_roll)
+        self.piano_roll.selection_changed.connect(self._on_selection_changed)
         self.sequence.seek_requested.connect(self._seek_seconds)
         self.apply_note_button.clicked.connect(self._apply_selected_note_edit)
 
@@ -888,17 +892,39 @@ class MainWindow(QMainWindow):
         self.stats_label.setText(text)
 
     def _select_note(self, index: int | None, _seek_seconds: float | None = None) -> None:
+        """Select exactly one note, or clear the selection."""
+
         notes = self.state.current_notes
-        self.selected_note_index = index if index is not None and 0 <= index < len(notes) else None
-        self.piano_roll.set_selected_note_index(self.selected_note_index)
-        self.controls.set_can_delete(self.selected_note_index is not None)
-        self._set_note_inspector_enabled(self.selected_note_index is not None)
-        if self.selected_note_index is None:
+        valid = index if index is not None and 0 <= index < len(notes) else None
+        self.piano_roll.set_selected_note_index(valid)
+        self._sync_selection_ui({valid} if valid is not None else set())
+
+    def _on_selection_changed(self, indices: set[int]) -> None:
+        """Mirror a selection set coming from the piano roll (issue #35)."""
+
+        self._sync_selection_ui(set(indices))
+
+    def _sync_selection_ui(self, indices: set[int]) -> None:
+        """Drive the inspector, label and delete button from a selection set.
+
+        The single-note inspector only makes sense for exactly one note, so it
+        is disabled for a multi-selection; delete works for any non-empty set.
+        """
+
+        notes = self.state.current_notes
+        self.selected_indices = {index for index in indices if 0 <= index < len(notes)}
+        single = next(iter(self.selected_indices)) if len(self.selected_indices) == 1 else None
+        self.selected_note_index = single
+        self.controls.set_can_delete(bool(self.selected_indices))
+        self._set_note_inspector_enabled(single is not None)
+        if single is not None:
+            note = notes[single]
+            self._populate_note_inspector(note)
+            self.selected_note_label.setText(self._note_summary(note))
+        elif self.selected_indices:
+            self.selected_note_label.setText(f"{len(self.selected_indices)} notes selected")
+        else:
             self.selected_note_label.setText("No note selected")
-            return
-        note = notes[self.selected_note_index]
-        self._populate_note_inspector(note)
-        self.selected_note_label.setText(self._note_summary(note))
 
     def _create_note_from_piano_roll(
         self,
@@ -935,16 +961,26 @@ class MainWindow(QMainWindow):
         )
 
     def _delete_selected_note(self) -> None:
-        if self.selected_note_index is None:
+        """Delete every selected note as one undoable step (issue #35)."""
+
+        if not self.selected_indices:
             return
         current = list(self.state.current_notes)
-        deleted = current[self.selected_note_index]
+        doomed = sorted(index for index in self.selected_indices if 0 <= index < len(current))
+        if not doomed:
+            return
         self.edit_history.record(current)
-        self.state.tuned_notes = delete_gui_note(current, self.selected_note_index)
+        # edit_history snapshots the whole list, so a batch delete undoes in one
+        # step just like a single delete does.
+        self.state.tuned_notes = delete_gui_notes(current, set(doomed))
+        if len(doomed) == 1:
+            what = f"Deleted MIDI {current[doomed[0]].pitch}"
+        else:
+            what = f"Deleted {len(doomed)} notes"
         self._select_note(None)
         self._set_display_notes(self.state.tuned_notes)
         preview_status = self._refresh_midi_preview(self.state.tuned_notes)
-        self._set_status(f"Deleted MIDI {deleted.pitch}. Export writes {len(self.state.tuned_notes)} edited notes.{preview_status}")
+        self._set_status(f"{what}. Export writes {len(self.state.tuned_notes)} edited notes.{preview_status}")
 
     def _undo_edit(self) -> None:
         restored = self.edit_history.undo(self.state.current_notes)
@@ -1033,7 +1069,10 @@ class MainWindow(QMainWindow):
             self.state.tuned_notes = list(self.state.current_notes)
         # Mutate the working list by index -- no per-tick full-list copy.
         self.state.tuned_notes[index] = edited_note
+        # The dragged note is the selection for the duration of the gesture;
+        # keep both views of it in step.
         self.selected_note_index = index
+        self.selected_indices = {index}
         if not update_preview:
             # Uncommitted drag: update just the dragged note with a partial
             # repaint and refresh the inspector, skipping the full set_data

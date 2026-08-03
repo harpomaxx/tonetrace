@@ -36,6 +36,7 @@ __all__ = [
     "ProjectState",
     "add_gui_note",
     "delete_gui_note",
+    "delete_gui_notes",
     "gui_note_to_midi",
     "gui_notes_to_midi",
     "heatmap_from_document",
@@ -194,6 +195,19 @@ def add_gui_note(notes: list[GuiMidiNote], note: GuiMidiNote) -> tuple[list[GuiM
     updated = list(notes)
     updated.insert(index, note)
     return updated, index
+
+
+def delete_gui_notes(notes: list[GuiMidiNote], indices: set[int]) -> list[GuiMidiNote]:
+    """Return a copy of notes with every indexed note removed.
+
+    Filtering by position in one pass avoids the classic batch-delete bug where
+    removing a low index shifts the ones still to be removed.
+    """
+
+    drop = {index for index in indices if 0 <= index < len(notes)}
+    if not drop:
+        return list(notes)
+    return [note for index, note in enumerate(notes) if index not in drop]
 
 
 def update_gui_note(notes: list[GuiMidiNote], index: int, **changes: object) -> list[GuiMidiNote]:

@@ -34,6 +34,9 @@ class PianoRollWidget(QWidget):
     # (start_seconds, duration_seconds, pitch, velocity) for a note created by
     # double-clicking empty space.
     note_created = Signal(float, float, int, int)
+    # Emitted whenever the selected *set* changes (issue #35). note_selected
+    # still fires for the single-note case so the inspector keeps working.
+    selection_changed = Signal(object)
     zoom_changed = Signal(float)
     vertical_zoom_changed = Signal(float)
 
@@ -61,7 +64,12 @@ class PianoRollWidget(QWidget):
         self.show_notes = True
         self.show_heatmap = True
         self.show_pitch_bends = True
-        self.selected_note_index: int | None = None
+        self.selected_indices: set[int] = set()
+        # Rubber-band drag over empty space (issue #35). Both are canvas points;
+        # None means no band is in progress.
+        self.rubber_start: tuple[float, float] | None = None
+        self.rubber_current: tuple[float, float] | None = None
+        self.rubber_base_selection: set[int] = set()
         self.hover_note_index: int | None = None
         self.hover_mode: str | None = None
         self.playhead_seconds = 0.0
@@ -124,8 +132,9 @@ class PianoRollWidget(QWidget):
                 else {}
             )
         self._rebuild_note_index()
-        if self.selected_note_index is not None and self.selected_note_index >= len(notes):
-            self.selected_note_index = None
+        stale = {index for index in self.selected_indices if index >= len(notes)}
+        if stale:
+            self.selected_indices -= stale
         if self.hover_note_index is not None and self.hover_note_index >= len(notes):
             self.hover_note_index = None
             self.hover_mode = None
@@ -260,11 +269,44 @@ class PianoRollWidget(QWidget):
             region = inflated if region is None else region.united(inflated)
         return region
 
-    def set_selected_note_index(self, index: int | None) -> None:
-        """Select a note by current note-list index."""
+    @property
+    def selected_note_index(self) -> int | None:
+        """The single selected note, or None when zero or several are selected.
 
-        self.selected_note_index = index if index is not None and 0 <= index < len(self.notes) else None
+        Kept so single-selection callers (the note inspector, edit-apply) read
+        naturally; the set in ``selected_indices`` is the source of truth.
+        """
+
+        if len(self.selected_indices) != 1:
+            return None
+        return next(iter(self.selected_indices))
+
+    def set_selected_note_index(self, index: int | None) -> None:
+        """Replace the selection with a single note, or clear it."""
+
+        if index is None or not 0 <= index < len(self.notes):
+            self.set_selected_indices(set())
+            return
+        self.set_selected_indices({index})
+
+    def set_selected_indices(self, indices: set[int]) -> None:
+        """Replace the whole selection, dropping any out-of-range index."""
+
+        valid = {index for index in indices if 0 <= index < len(self.notes)}
+        if valid == self.selected_indices:
+            return
+        self.selected_indices = valid
+        self.selection_changed.emit(set(valid))
         self.update()
+
+    def toggle_selected_index(self, index: int) -> None:
+        """Add or remove one note from the selection (shift-click)."""
+
+        if not 0 <= index < len(self.notes):
+            return
+        updated = set(self.selected_indices)
+        updated.discard(index) if index in updated else updated.add(index)
+        self.set_selected_indices(updated)
 
     def set_playhead(self, seconds: float) -> None:
         """Set the drawn playhead position without repainting the full heatmap."""
@@ -422,27 +464,44 @@ class PianoRollWidget(QWidget):
         if self.heatmap is not None and event.button() == Qt.MouseButton.LeftButton:
             x = float(event.position().x())
             y = float(event.position().y())
+            shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
             hit = self._note_hit_at(x, y)
             if hit is not None:
                 note_index, mode = hit
-                self.drag_mode = mode
-                self.drag_note_index = note_index
-                self.drag_start_x = x
-                self.drag_start_y = y
-                self.drag_original_note = self.notes[note_index]
-                self.drag_has_moved = False
-                self.set_selected_note_index(note_index)
-                note = self.notes[note_index]
-                self.note_selected.emit(note_index, note.start_seconds)
-                self.seek_requested.emit(note.start_seconds)
+                if shift:
+                    # Shift-click toggles membership and starts no drag, so a
+                    # stray movement cannot edit a note the user is deselecting.
+                    self.drag_mode = None
+                    self.drag_note_index = None
+                    self.drag_original_note = None
+                    self.toggle_selected_index(note_index)
+                else:
+                    self.drag_mode = mode
+                    self.drag_note_index = note_index
+                    self.drag_start_x = x
+                    self.drag_start_y = y
+                    self.drag_original_note = self.notes[note_index]
+                    self.drag_has_moved = False
+                    # Clicking a note already in a multi-selection keeps the set
+                    # (so a drag can act on it); otherwise the click replaces it.
+                    if note_index not in self.selected_indices:
+                        self.set_selected_note_index(note_index)
+                    note = self.notes[note_index]
+                    self.note_selected.emit(note_index, note.start_seconds)
+                    self.seek_requested.emit(note.start_seconds)
             else:
+                # Empty space arms a rubber-band. It only becomes a selection
+                # once the pointer moves past the drag threshold; releasing
+                # without moving seeks, exactly as a plain click always has.
                 self.drag_mode = None
                 self.drag_note_index = None
                 self.drag_original_note = None
-                self.set_selected_note_index(None)
-                x_after_keyboard = x - self.keyboard_width
-                if x_after_keyboard >= 0:
-                    self.seek_requested.emit(max(0.0, x_after_keyboard * self.seconds_per_pixel))
+                self.drag_start_x = x
+                self.drag_start_y = y
+                self.drag_has_moved = False
+                self.rubber_start = (x, y)
+                self.rubber_current = None
+                self.rubber_base_selection = set(self.selected_indices) if shift else set()
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt API
@@ -502,9 +561,40 @@ class PianoRollWidget(QWidget):
                     edited.velocity,
                     False,
                 )
+        elif self.rubber_start is not None:
+            if not self.drag_has_moved:
+                distance = math.hypot(x - self.drag_start_x, y - self.drag_start_y)
+                if distance < self.drag_threshold_pixels:
+                    super().mouseMoveEvent(event)
+                    return
+                self.drag_has_moved = True
+            self.rubber_current = (x, y)
+            self.set_selected_indices(
+                self.rubber_base_selection | self._notes_in_rect(self._rubber_rect())
+            )
         else:
             self._update_hover_state(x, y)
         super().mouseMoveEvent(event)
+
+    def _rubber_rect(self) -> QRectF | None:
+        """The current rubber-band rectangle, normalized, or None."""
+
+        if self.rubber_start is None or self.rubber_current is None:
+            return None
+        (x0, y0), (x1, y1) = self.rubber_start, self.rubber_current
+        return QRectF(min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
+
+    def _notes_in_rect(self, rect: QRectF | None) -> set[int]:
+        """Indices of every note whose rectangle intersects ``rect``."""
+
+        if rect is None or not self.show_notes:
+            return set()
+        selected = set()
+        for index, note in enumerate(self.notes):
+            note_rect = self._note_rect(note)
+            if note_rect is not None and rect.intersects(note_rect):
+                selected.add(index)
+        return selected
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt API
         if self.drag_mode is not None and self.drag_note_index is not None and self.drag_original_note is not None and self.drag_has_moved:
@@ -518,12 +608,37 @@ class PianoRollWidget(QWidget):
                     edited.velocity,
                     True,
                 )
+        elif self.rubber_start is not None:
+            if self.drag_has_moved:
+                # The band already applied the selection on every move; just
+                # settle it and let go of the band.
+                self.set_selected_indices(
+                    self.rubber_base_selection | self._notes_in_rect(self._rubber_rect())
+                )
+            else:
+                # Pressed and released without moving: that is a plain click on
+                # empty space, which clears the selection and seeks as before.
+                self.set_selected_indices(set())
+                x_after_keyboard = self.rubber_start[0] - self.keyboard_width
+                if x_after_keyboard >= 0:
+                    self.seek_requested.emit(max(0.0, x_after_keyboard * self.seconds_per_pixel))
+        self._clear_rubber_band()
         self.drag_mode = None
         self.drag_note_index = None
         self.drag_original_note = None
         self.drag_has_moved = False
         self._update_hover_state(float(event.position().x()), float(event.position().y()))
         super().mouseReleaseEvent(event)
+
+    def _clear_rubber_band(self) -> None:
+        """Drop any in-progress band and repaint away its rectangle."""
+
+        if self.rubber_start is None and self.rubber_current is None:
+            return
+        self.rubber_start = None
+        self.rubber_current = None
+        self.rubber_base_selection = set()
+        self.update()
 
     def leaveEvent(self, event) -> None:  # noqa: N802 - Qt API
         self.hover_note_index = None
@@ -551,9 +666,21 @@ class PianoRollWidget(QWidget):
             if self.show_pitch_bends:
                 self._draw_bend_curves(painter)
         self._draw_playhead(painter)
+        self._draw_rubber_band(painter)
         # Keyboard is drawn last and pinned to the visible left edge so it stays
         # in view (opaque, over the content) while scrolling horizontally.
         self._draw_keyboard(painter)
+
+    def _draw_rubber_band(self, painter: QPainter) -> None:
+        """Draw the in-progress selection rectangle (issue #35)."""
+
+        rect = self._rubber_rect()
+        if rect is None:
+            return
+        color = qcolor(active_theme().note_selected)
+        painter.setPen(QPen(color, 1, Qt.PenStyle.DashLine))
+        painter.setBrush(QColor(color.red(), color.green(), color.blue(), 48))
+        painter.drawRect(rect)
 
     def _horizontal_scroll_bar(self):
         """Return the enclosing scroll area's horizontal bar, or None."""
@@ -978,7 +1105,7 @@ class PianoRollWidget(QWidget):
                 continue
             if not clip.isEmpty() and (rect.right() < clip.left() or rect.left() > clip.right() or rect.bottom() < clip.top() or rect.top() > clip.bottom()):
                 continue
-            is_selected = list_index == self.selected_note_index
+            is_selected = list_index in self.selected_indices
             is_hovered = list_index == self.hover_note_index
             if is_selected:
                 painter.setPen(QPen(selected, 2))
