@@ -303,30 +303,120 @@ class PianoRollWidget(QWidget):
         if self.heatmap is not None and event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             delta_y = event.angleDelta().y() or event.pixelDelta().y()
             if delta_y:
-                self.vertical_zoom_by_wheel_delta(delta_y)
+                # Anchor on the cursor so the pointed-at pitch stays put.
+                self.vertical_zoom_by_wheel_delta(delta_y, anchor_y=float(event.position().y()))
                 event.accept()
                 return
         if self.heatmap is not None and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             delta_y = event.angleDelta().y() or event.pixelDelta().y()
             if delta_y:
-                self.zoom_by_wheel_delta(delta_y)
+                # Anchor on the cursor so the pointed-at moment stays put.
+                self.zoom_by_wheel_delta(delta_y, anchor_x=float(event.position().x()))
                 event.accept()
                 return
         super().wheelEvent(event)
 
-    def zoom_by_wheel_delta(self, delta_y: int) -> None:
-        """Zoom horizontally from a wheel delta; positive delta zooms in."""
+    def zoom_by_wheel_delta(self, delta_y: int, anchor_x: float | None = None) -> None:
+        """Zoom horizontally from a wheel delta; positive delta zooms in.
+
+        ``anchor_x`` is a canvas x to hold still (issue #10): the time under the
+        cursor stays under the cursor instead of the view zooming around the left
+        edge, which used to push the point of interest sideways off screen. When
+        omitted, the viewport centre is held instead, so keyboard/button zoom
+        does not jump the view either.
+        """
 
         factor = 1.2 ** (delta_y / 120.0)
-        self.set_horizontal_zoom(self.horizontal_zoom * factor)
+        self.zoom_to(self.horizontal_zoom * factor, anchor_x=anchor_x)
+
+    def zoom_to(self, zoom: float, *, anchor_x: float | None = None) -> None:
+        """Set horizontal zoom while keeping ``anchor_x``'s time under itself."""
+
+        bar = self._horizontal_scroll_bar()
+        if anchor_x is None:
+            # No cursor to anchor: hold the middle of what is currently visible.
+            anchor_x = self._horizontal_scroll_offset() + self._viewport_width() / 2.0
+        # Time under the anchor, and where the anchor sits inside the viewport;
+        # both must be measured before the scale changes.
+        anchor_seconds = self.seconds_at_x(anchor_x)
+        offset_in_viewport = anchor_x - self._horizontal_scroll_offset()
+
+        self.set_horizontal_zoom(zoom)
+
+        if bar is not None:
+            # Solve for the scroll offset that puts anchor_seconds back at the
+            # same spot in the viewport under the new seconds_per_pixel.
+            target = self.x_for_seconds(anchor_seconds) - offset_in_viewport
+            bar.setValue(max(0, round(target)))
         self.zoom_changed.emit(self.horizontal_zoom)
 
-    def vertical_zoom_by_wheel_delta(self, delta_y: int) -> None:
-        """Zoom note height from a wheel delta; positive delta makes rows taller."""
+    def _viewport_width(self) -> int:
+        """Width of the visible slice of the canvas, not the zoomed canvas."""
+
+        viewport = self.parentWidget()
+        if viewport is not None and viewport.width() > 0:
+            return viewport.width()
+        return max(1, self.width())
+
+    def seconds_at_x(self, x: float) -> float:
+        """Inverse of x_for_seconds: the time a canvas x represents."""
+
+        return max(0.0, (float(x) - self.keyboard_width) * self.seconds_per_pixel)
+
+    def vertical_zoom_by_wheel_delta(self, delta_y: int, anchor_y: float | None = None) -> None:
+        """Zoom note height from a wheel delta; positive delta makes rows taller.
+
+        ``anchor_y`` is a canvas y to hold still (issue #10). Rows grow downward
+        from the top of the canvas, so without an anchor the pitch under the
+        cursor slides away fast -- nearly three octaves over five wheel clicks.
+        """
 
         factor = 1.2 ** (delta_y / 120.0)
-        self.set_vertical_zoom(self.vertical_zoom * factor)
+        self.vertical_zoom_to(self.vertical_zoom * factor, anchor_y=anchor_y)
+
+    def vertical_zoom_to(self, zoom: float, *, anchor_y: float | None = None) -> None:
+        """Set vertical zoom while keeping ``anchor_y``'s pitch row under itself."""
+
+        bar = self._vertical_scroll_bar()
+        if anchor_y is None:
+            # No cursor to anchor: hold the middle of what is currently visible.
+            anchor_y = self._vertical_scroll_offset() + self._viewport_height() / 2.0
+        # The fractional row under the anchor, and where the anchor sits inside
+        # the viewport; both must be measured before note_height changes.
+        anchor_row = self._row_at_y_exact(anchor_y)
+        offset_in_viewport = anchor_y - self._vertical_scroll_offset()
+
+        self.set_vertical_zoom(zoom)
+
+        if bar is not None:
+            # Solve for the scroll offset that puts anchor_row back at the same
+            # spot in the viewport under the new note_height.
+            target = anchor_row * self.note_height - offset_in_viewport
+            bar.setValue(max(0, round(target)))
         self.vertical_zoom_changed.emit(self.vertical_zoom)
+
+    def _row_at_y_exact(self, y: float) -> float:
+        """Fractional row-from-top at a canvas y (unclamped, unlike _row_for_y)."""
+
+        if self.note_height <= 0:
+            return 0.0
+        return max(0.0, float(y)) / self.note_height
+
+    def _vertical_scroll_offset(self) -> int:
+        """Return how far the canvas is scrolled down inside its scroll area."""
+
+        bar = self._vertical_scroll_bar()
+        if bar is None:
+            return 0
+        return max(0, bar.value())
+
+    def _viewport_height(self) -> int:
+        """Height of the visible slice of the canvas, not the zoomed canvas."""
+
+        viewport = self.parentWidget()
+        if viewport is not None and viewport.height() > 0:
+            return viewport.height()
+        return max(1, self.height())
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt API
         if self.heatmap is not None and event.button() == Qt.MouseButton.LeftButton:
@@ -465,6 +555,26 @@ class PianoRollWidget(QWidget):
         # in view (opaque, over the content) while scrolling horizontally.
         self._draw_keyboard(painter)
 
+    def _horizontal_scroll_bar(self):
+        """Return the enclosing scroll area's horizontal bar, or None."""
+
+        return self._scroll_bar("horizontalScrollBar")
+
+    def _vertical_scroll_bar(self):
+        """Return the enclosing scroll area's vertical bar, or None."""
+
+        return self._scroll_bar("verticalScrollBar")
+
+    def _scroll_bar(self, accessor: str):
+        """Return one of the enclosing scroll area's bars, or None."""
+
+        viewport = self.parentWidget()
+        if viewport is None:
+            return None
+        scroll_area = viewport.parentWidget()
+        bar = getattr(scroll_area, accessor, None)
+        return None if bar is None else bar()
+
     def _horizontal_scroll_offset(self) -> int:
         """Return how far the canvas is scrolled left inside its scroll area.
 
@@ -473,14 +583,10 @@ class PianoRollWidget(QWidget):
         keyboard pin itself to the visible left edge instead of scrolling away.
         """
 
-        viewport = self.parentWidget()
-        if viewport is None:
-            return 0
-        scroll_area = viewport.parentWidget()
-        bar = getattr(scroll_area, "horizontalScrollBar", None)
+        bar = self._horizontal_scroll_bar()
         if bar is None:
             return 0
-        return max(0, bar().value())
+        return max(0, bar.value())
 
     def _visible_x_range(self) -> tuple[float, float]:
         """Return the (left, right) canvas x range currently visible in the viewport.
