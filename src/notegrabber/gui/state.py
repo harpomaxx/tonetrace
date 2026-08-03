@@ -34,6 +34,7 @@ __all__ = [
     "GuiHeatmap",
     "GuiMidiNote",
     "ProjectState",
+    "add_gui_note",
     "delete_gui_note",
     "gui_note_to_midi",
     "gui_notes_to_midi",
@@ -168,6 +169,31 @@ def delete_gui_note(notes: list[GuiMidiNote], index: int) -> list[GuiMidiNote]:
     if index < 0 or index >= len(notes):
         return list(notes)
     return [note for note_index, note in enumerate(notes) if note_index != index]
+
+
+def add_gui_note(notes: list[GuiMidiNote], note: GuiMidiNote) -> tuple[list[GuiMidiNote], int]:
+    """Return a copy of notes with ``note`` inserted, plus its insertion index.
+
+    The note is normalized first, then inserted in start-time order so the
+    sequence table stays tidy (the piano roll hit-tests every note and does not
+    require sorted order).  The index is returned because the caller selects the
+    new note, and inserting in order means it is not simply ``len(notes)``.
+
+    Uses a linear scan rather than a bisect: extraction yields sorted notes, but
+    drag-edits move start times without re-sorting, so the list is not reliably
+    ordered at runtime.  This lands the note after every earlier-starting note,
+    which degrades to "append" on an unsorted list instead of misplacing it.
+    """
+
+    note = normalized_gui_note(note)
+    index = len(notes)
+    for position, existing in enumerate(notes):
+        if existing.start_seconds > note.start_seconds:
+            index = position
+            break
+    updated = list(notes)
+    updated.insert(index, note)
+    return updated, index
 
 
 def update_gui_note(notes: list[GuiMidiNote], index: int, **changes: object) -> list[GuiMidiNote]:

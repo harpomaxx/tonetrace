@@ -38,7 +38,7 @@ from .edit_history import EditHistory
 from .transcription_stats import compute_stats
 from .midi_preview_worker import MidiPreviewRequest, MidiPreviewResult, render_midi_preview
 from .process_jobs import JobArtifact, JobProgress, ProcessJob
-from .state import GuiMidiNote, ProjectState, delete_gui_note, gui_notes_to_midi, normalized_gui_note, retune_notes_from_heatmap
+from .state import GuiMidiNote, ProjectState, add_gui_note, delete_gui_note, gui_notes_to_midi, normalized_gui_note, retune_notes_from_heatmap
 from .theme import THEMES, active_theme, build_stylesheet, polish_button, set_active_theme
 from .widgets.collapsible import CollapsibleSection
 from .widgets.controls import AnalysisControls
@@ -410,6 +410,7 @@ class MainWindow(QMainWindow):
         self.piano_roll.seek_requested.connect(self._seek_seconds)
         self.piano_roll.note_selected.connect(self._select_note)
         self.piano_roll.note_edited.connect(self._edit_note_from_piano_roll)
+        self.piano_roll.note_created.connect(self._create_note_from_piano_roll)
         self.sequence.seek_requested.connect(self._seek_seconds)
         self.apply_note_button.clicked.connect(self._apply_selected_note_edit)
 
@@ -864,6 +865,40 @@ class MainWindow(QMainWindow):
         note = notes[self.selected_note_index]
         self._populate_note_inspector(note)
         self.selected_note_label.setText(self._note_summary(note))
+
+    def _create_note_from_piano_roll(
+        self,
+        start_seconds: float,
+        duration_seconds: float,
+        pitch: int,
+        velocity: int,
+    ) -> None:
+        """Insert a note double-clicked into empty piano-roll space (issue #37).
+
+        One undoable step: edit_history snapshots the whole list, so undo removes
+        the note for free.  The new note is selected so it can be tweaked in the
+        inspector straight away.
+        """
+
+        if self.state.heatmap is None:
+            return
+        current = list(self.state.current_notes)
+        self.edit_history.record(current)
+        created = GuiMidiNote(
+            pitch=int(pitch),
+            start_seconds=float(start_seconds),
+            duration_seconds=float(duration_seconds),
+            velocity=int(velocity),
+            source="manual",
+        )
+        self.state.tuned_notes, index = add_gui_note(current, created)
+        self._set_display_notes(self.state.tuned_notes)
+        self._select_note(index)
+        preview_status = self._refresh_midi_preview(self.state.tuned_notes)
+        self._set_status(
+            f"Added MIDI {created.pitch} at {created.start_seconds:.2f}s. "
+            f"Export writes {len(self.state.tuned_notes)} edited notes.{preview_status}"
+        )
 
     def _delete_selected_note(self) -> None:
         if self.selected_note_index is None:

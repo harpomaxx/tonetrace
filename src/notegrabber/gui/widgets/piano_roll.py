@@ -31,6 +31,9 @@ class PianoRollWidget(QWidget):
     seek_requested = Signal(float)
     note_selected = Signal(int, float)
     note_edited = Signal(int, float, float, int, int, bool)
+    # (start_seconds, duration_seconds, pitch, velocity) for a note created by
+    # double-clicking empty space.
+    note_created = Signal(float, float, int, int)
     zoom_changed = Signal(float)
     vertical_zoom_changed = Signal(float)
 
@@ -78,10 +81,15 @@ class PianoRollWidget(QWidget):
         self.drag_has_moved = False
         self.drag_threshold_pixels = 3.0
         self.min_note_duration_seconds = 0.001
+        # Defaults for a note created by double-clicking empty space (issue #37).
+        # A fixed duration rather than the grid interval: _grid_interval_seconds
+        # is whole seconds (>= 1s), which is far too long for a single note.
+        self.new_note_duration_seconds = 0.25
+        self.new_note_velocity = 90
         self.minimum_canvas_width = 760
         self.minimum_canvas_height = 420
         self.setMouseTracking(True)
-        self.setToolTip("Click notes to select. Drag note bodies to move time/pitch; drag edges to resize. Ctrl+wheel zooms time; Shift+wheel changes note height.")
+        self.setToolTip("Click notes to select. Drag note bodies to move time/pitch; drag edges to resize. Double-click empty space to add a note. Ctrl+wheel zooms time; Shift+wheel changes note height.")
         self.setMinimumSize(self.minimum_canvas_width, self.minimum_canvas_height)
 
     def set_data(
@@ -346,6 +354,43 @@ class PianoRollWidget(QWidget):
                 if x_after_keyboard >= 0:
                     self.seek_requested.emit(max(0.0, x_after_keyboard * self.seconds_per_pixel))
         super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt API
+        """Double-clicking empty space inserts a note there (issue #37).
+
+        Double-clicking *on* a note does nothing new -- the press that precedes
+        this event already selected it and armed a move/resize drag.  Empty space
+        is shared with single-click seek, which has already fired for the first
+        click of the double; creation is additive rather than replacing it.
+        """
+
+        if self.heatmap is None or event.button() != Qt.MouseButton.LeftButton:
+            super().mouseDoubleClickEvent(event)
+            return
+        x = float(event.position().x())
+        y = float(event.position().y())
+        if self._note_hit_at(x, y) is not None:
+            super().mouseDoubleClickEvent(event)
+            return
+        pitch = self._pitch_at_y(y)
+        x_after_keyboard = x - self.keyboard_width
+        if pitch is None or x_after_keyboard < 0:
+            super().mouseDoubleClickEvent(event)
+            return
+        # A creation double-click must not leave a half-armed drag behind: the
+        # preceding press on empty space cleared it, but be explicit.
+        self.drag_mode = None
+        self.drag_note_index = None
+        self.drag_original_note = None
+        self.drag_has_moved = False
+        start_seconds = max(0.0, x_after_keyboard * self.seconds_per_pixel)
+        self.note_created.emit(
+            start_seconds,
+            self.new_note_duration_seconds,
+            int(pitch),
+            int(self.new_note_velocity),
+        )
+        event.accept()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt API
         x = float(event.position().x())
