@@ -9,6 +9,7 @@ analysis cleans up its own dir since no result reaches the window.
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -150,6 +151,49 @@ def test_analysis_worker_emits_compact_offset_heatmap_without_document_conversio
     assert result.heatmap_path is None
     assert result.notes[0].start_seconds == pytest.approx(12.5)
     assert result.analysis_start_seconds == pytest.approx(12.5)
+    assert result.work_dir is not None
+    shutil.rmtree(result.work_dir)
+
+
+def test_run_analysis_request_reports_ordered_stages(tmp_path, monkeypatch):
+    import notegrabber.gui.analysis_worker as worker_module
+    from notegrabber.gui.analysis_worker import AnalysisRequest, run_analysis_request
+    from notegrabber.heatmap import HeatmapData
+    from notegrabber.midi import MidiNote
+
+    np = pytest.importorskip("numpy")
+    heatmap = HeatmapData(
+        backend="cqt",
+        midi_notes=[60],
+        frame_times=[0.0],
+        activations=np.zeros((1, 1), dtype=np.float32),
+        sample_rate=100,
+        hop_size=10,
+        window_size=20,
+    )
+
+    def fake_analyze(*_args, **_kwargs):
+        return [MidiNote(pitch=60, start_tick=0, duration_ticks=10, velocity=80)], heatmap
+
+    monkeypatch.setattr(worker_module, "analyze_wav_to_midi_with_heatmap_data", fake_analyze)
+    messages: list[str] = []
+    result = run_analysis_request(
+        AnalysisRequest(
+            audio_path=tmp_path / "song.wav",
+            backend="cqt",
+            render_midi=False,
+            threshold=0.5,
+            onset_threshold=0.5,
+            frame_threshold=0.3,
+            min_duration_seconds=0.05,
+        ),
+        tmp_path / "work",
+        progress=messages.append,
+    )
+
+    assert messages == ["Preparing analysis…", "Analyzing with cqt…"]
+    assert result.work_dir == tmp_path / "work"
+    assert result.notes[0].pitch == 60
 
 
 def test_worker_removes_work_dir_when_analysis_fails(tmp_path, monkeypatch):

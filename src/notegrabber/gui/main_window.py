@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import pickle
 import shutil
 import tempfile
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QElapsedTimer, QSettings, QThread, QTimer, Qt, QUrl
+from PySide6.QtCore import QElapsedTimer, QSettings, QTimer, Qt, QUrl
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -30,11 +32,12 @@ from PySide6.QtWidgets import (
 from notegrabber.analyzer import BackendName
 from notegrabber.export import EXPORT_FORMATS, export_notes, format_for_path
 
-from .analysis_worker import AnalysisRequest, AnalysisResult, AnalysisWorker
-from .audio_load_worker import AudioLoadWorker, OverviewReady, WaveformReady
+from .analysis_worker import AnalysisRequest, AnalysisResult
+from .audio_load_worker import OverviewReady, WaveformReady
 from .edit_history import EditHistory
 from .transcription_stats import compute_stats
-from .midi_preview_worker import MidiPreviewRequest, MidiPreviewResult, MidiPreviewWorker, render_midi_preview
+from .midi_preview_worker import MidiPreviewRequest, MidiPreviewResult, render_midi_preview
+from .process_jobs import JobArtifact, JobProgress, ProcessJob
 from .state import GuiMidiNote, ProjectState, delete_gui_note, gui_notes_to_midi, normalized_gui_note, retune_notes_from_heatmap
 from .theme import THEMES, active_theme, build_stylesheet, polish_button, set_active_theme
 from .widgets.collapsible import CollapsibleSection
@@ -47,6 +50,11 @@ from .widgets.waveform import WaveformWidget
 
 class MainWindow(QMainWindow):
     """NeuralNote-inspired standalone app shell."""
+
+    # Keep windows whose first close was deferred alive until their child
+    # processes report NotRunning; otherwise Python GC can destroy the QProcess
+    # parent while cancellation is still in flight.
+    _deferred_close_windows: list["MainWindow"] = []
 
     # Solo playback volume for a single source.
     SOLO_VOLUME = 0.85
@@ -69,11 +77,14 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.state = ProjectState(backend=initial_backend)
         self.render_midi = render_midi
-        self.analysis_thread: QThread | None = None
-        self.analysis_worker: AnalysisWorker | None = None
-        # One decode-once job per open feeds both the waveform preview and the
-        # overview (issue #33). Tracked so closeEvent can drain in-flight loads.
-        self.audio_load_runs: list[tuple[QThread, AudioLoadWorker]] = []
+        self.analysis_job: ProcessJob | None = None
+        self._analysis_generation = 0
+        # One decode-once process per open feeds both the waveform preview and
+        # overview (issue #33), isolated so it can be cancelled safely.
+        self.audio_load_job: ProcessJob | None = None
+        self._audio_load_generation = 0
+        self._stale_jobs: list[ProcessJob] = []
+        self._analysis_settings_by_generation: dict[int, tuple[BackendName, float, float, float, float]] = {}
         self.selected_note_index: int | None = None
         self.playback_mode = "stopped"
         self.playback_timer = QTimer(self)
@@ -87,8 +98,9 @@ class MainWindow(QMainWindow):
 
         # Debounced, superseding, off-thread MIDI preview rendering so editing
         # notes does not freeze the UI on every edit.
-        self.preview_runs: list[tuple[QThread, MidiPreviewWorker]] = []
+        self.preview_jobs: list[tuple[int, ProcessJob]] = []
         self._preview_dir: Path | None = None
+        self._retired_preview_dirs: list[Path] = []
         # The temp work dir of the current analysis result (heatmap.json, the
         # rendered preview WAV, range WAVs). Removed once a newer analysis
         # supersedes it or on close, so re-analyses do not pile up in /tmp.
@@ -98,6 +110,8 @@ class MainWindow(QMainWindow):
         self.preview_debounce_timer = QTimer(self)
         self.preview_debounce_timer.setSingleShot(True)
         self.preview_debounce_timer.setInterval(250)
+        self._closing = False
+        self._final_close = False
 
         self.setWindowTitle("ToneTrace")
         self.resize(1280, 820)
@@ -110,6 +124,10 @@ class MainWindow(QMainWindow):
         self.waveform.left_gutter = self.piano_roll.keyboard_width
         self.sequence = SequenceWidget()
         self.transport = TransportWidget()
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setMaximumHeight(6)
+        self.progress_bar.hide()
         # File name shown as a prefix on the stats strip (no longer its own row).
         self._current_file_name = ""
         self.file_label = QLabel("No audio loaded")
@@ -180,6 +198,9 @@ class MainWindow(QMainWindow):
         # are about to reset.
         self._stop_playback()
         self.preview_debounce_timer.stop()
+        self._preview_request_id += 1
+        for _generation, job in list(self.preview_jobs):
+            job.cancel()
         self.state.audio_path = path
         self.state.rendered_midi_wav = None
         self.state.heatmap = None
@@ -202,6 +223,7 @@ class MainWindow(QMainWindow):
         self._update_stats([])
         self.original_player.setSource(QUrl.fromLocalFile(str(path)))
         self.midi_player.setSource(QUrl())
+        self._retry_retired_preview_dirs()
         self.waveform.set_message("Loading waveform preview…")
         self._start_audio_load(path)
         self._set_status("Audio loaded. Loading waveform and overview in background…")
@@ -273,6 +295,7 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(action_row)
         # The one status line: themed LED strip, always on screen.
         top_layout.addWidget(self.transport.status_label)
+        top_layout.addWidget(self.progress_bar)
         # The loaded file name folds into the stats strip rather than owning its own
         # row (it is reference info, not a section). The waveform sits below it.
         self.stats_label = QLabel("Notes 0  ·  0:00  ·  — BPM  ·  —")
@@ -361,6 +384,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.controls.open_requested.connect(self._open_audio_dialog)
         self.controls.analyze_requested.connect(self._start_analysis)
+        self.controls.cancel_requested.connect(self._cancel_current_job)
         self.controls.export_requested.connect(self._export_midi_dialog)
         self.controls.delete_requested.connect(self._delete_selected_note)
         self.controls.retune_requested.connect(self._retune_from_controls)
@@ -402,19 +426,22 @@ class MainWindow(QMainWindow):
     def _start_audio_load(self, path: Path) -> None:
         """Decode the file once and feed both the waveform preview and overview."""
 
-        thread = QThread(self)
-        worker = AudioLoadWorker(path)
-        self.audio_load_runs.append((thread, worker))
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.progress.connect(self._set_status)
-        worker.waveform_ready.connect(self._waveform_ready)
-        worker.overview_ready.connect(self._overview_ready)
-        worker.failed.connect(self._audio_load_failed)
-        # Quit the thread only after run() has produced both payloads.
-        worker.done.connect(thread.quit)
-        thread.finished.connect(lambda thread=thread, worker=worker: self._audio_load_thread_finished(thread, worker))
-        thread.start()
+        self._audio_load_generation += 1
+        generation = self._audio_load_generation
+        if self.audio_load_job is not None:
+            self._stale_jobs.append(self.audio_load_job)
+            self.audio_load_job.cancel()
+        job = ProcessJob("audio-load", parent=self)
+        job.set_request({"audio_path": path, "sample_rate": 8000})
+        self.audio_load_job = job
+        job.progress.connect(lambda progress, generation=generation, job=job: self._audio_load_progress(generation, job, progress))
+        job.artifact.connect(lambda artifact, generation=generation, job=job: self._audio_load_artifact(generation, job, artifact))
+        job.stage_failed.connect(lambda stage, message, generation=generation: self._audio_load_stage_failed(generation, stage, message))
+        job.failed.connect(lambda message, generation=generation: self._audio_load_process_failed(generation, path, message))
+        job.cancelled.connect(lambda generation=generation: self._audio_load_cancelled(generation))
+        job.done.connect(lambda generation=generation, job=job: self._audio_load_done(generation, job))
+        self._refresh_job_ui()
+        job.start()
 
     def _waveform_ready(self, result: WaveformReady) -> None:
         if self.state.audio_path != result.audio_path:
@@ -425,14 +452,15 @@ class MainWindow(QMainWindow):
             duration_seconds=result.duration_seconds,
         )
         self.controls.set_audio_duration(result.duration_seconds)
-        if not self._maybe_enable_default_range_for_long_audio(result.duration_seconds):
+        if self.analysis_job is None and not self._maybe_enable_default_range_for_long_audio(result.duration_seconds):
             self._set_status("Waveform preview ready. Drag to choose a range or click Analyze.")
 
     def _overview_ready(self, result: OverviewReady) -> None:
         if self.state.audio_path != result.audio_path:
             return
         self.waveform.set_pitch_overview(result.overview)
-        self._set_status("Low-resolution pitch overview ready. Drag waveform to choose a range, then Analyze.")
+        if self.analysis_job is None:
+            self._set_status("Low-resolution pitch overview ready. Drag waveform to choose a range, then Analyze.")
 
     def _audio_load_failed(self, audio_path: Path, stage: str, message: str) -> None:
         if self.state.audio_path != audio_path:
@@ -444,10 +472,57 @@ class MainWindow(QMainWindow):
             self.waveform.set_pitch_overview(None)
             self._set_status(f"Pitch overview unavailable: {message}")
 
-    def _audio_load_thread_finished(self, thread: QThread, worker: AudioLoadWorker) -> None:
-        self.audio_load_runs = [(run_thread, run_worker) for run_thread, run_worker in self.audio_load_runs if run_thread is not thread]
-        worker.deleteLater()
-        thread.deleteLater()
+    def _audio_load_progress(self, generation: int, job: ProcessJob, progress: JobProgress) -> None:
+        if generation != self._audio_load_generation or job is not self.audio_load_job:
+            return
+        self._job_progress(progress, priority="audio-load")
+
+    def _audio_load_artifact(self, generation: int, job: ProcessJob, artifact: JobArtifact) -> None:
+        if self._closing or generation != self._audio_load_generation or job is not self.audio_load_job:
+            return
+        try:
+            with artifact.path.open("rb") as handle:
+                result = pickle.load(handle)
+            artifact.path.unlink(missing_ok=True)
+        except Exception as exc:
+            self._audio_load_stage_failed(generation, artifact.name, str(exc))
+            return
+        if artifact.name == "waveform":
+            if not isinstance(result, WaveformReady):
+                self._audio_load_stage_failed(generation, artifact.name, "waveform artifact had an unexpected type")
+                return
+            self._waveform_ready(result)
+        elif artifact.name == "overview":
+            if not isinstance(result, OverviewReady):
+                self._audio_load_stage_failed(generation, artifact.name, "overview artifact had an unexpected type")
+                return
+            self._overview_ready(result)
+
+    def _audio_load_stage_failed(self, generation: int, stage: str, message: str) -> None:
+        if self._closing or generation != self._audio_load_generation or self.state.audio_path is None:
+            return
+        self._audio_load_failed(self.state.audio_path, stage, message)
+
+    def _audio_load_process_failed(self, generation: int, path: Path, message: str) -> None:
+        if self._closing or generation != self._audio_load_generation:
+            return
+        if self.state.audio_path != path:
+            return
+        self.waveform.set_message("Waveform preview unavailable")
+        self.waveform.set_pitch_overview(None)
+        self._set_status(f"Audio loading failed: {message}")
+
+    def _audio_load_cancelled(self, generation: int) -> None:
+        if generation != self._audio_load_generation:
+            return
+        self._set_status("Audio loading cancelled.")
+
+    def _audio_load_done(self, generation: int, job: ProcessJob) -> None:
+        if job is self.audio_load_job:
+            self.audio_load_job = None
+        self._stale_jobs = [stale for stale in self._stale_jobs if stale is not job]
+        self._refresh_job_ui()
+        self._maybe_finish_deferred_close()
 
     def _maybe_enable_default_range_for_long_audio(self, duration_seconds: float) -> bool:
         if duration_seconds < 180.0 or self.controls.range_enabled.isChecked():
@@ -462,44 +537,44 @@ class MainWindow(QMainWindow):
         if self.state.audio_path is None:
             QMessageBox.information(self, "Open audio", "Open an audio file before analyzing.")
             return
-        if self.analysis_thread is not None:
+        if self.analysis_job is not None:
             return
 
         backend: BackendName = self.controls.backend()  # type: ignore[assignment]
-        self.state.backend = backend
-        self.state.threshold = self.controls.threshold()
-        self.state.onset_threshold = self.controls.onset_threshold()
-        self.state.frame_threshold = self.controls.frame_threshold()
-        self.state.min_duration = self.controls.min_duration_seconds()
+        threshold = self.controls.threshold()
+        onset_threshold = self.controls.onset_threshold()
+        frame_threshold = self.controls.frame_threshold()
+        min_duration = self.controls.min_duration_seconds()
 
         range_start_seconds, range_duration_seconds = self.controls.analysis_range()
         request = AnalysisRequest(
             audio_path=self.state.audio_path,
             backend=backend,
             render_midi=self.render_midi,
-            threshold=self.state.threshold,
-            onset_threshold=self.state.onset_threshold,
-            frame_threshold=self.state.frame_threshold,
-            min_duration_seconds=self.state.min_duration,
+            threshold=threshold,
+            onset_threshold=onset_threshold,
+            frame_threshold=frame_threshold,
+            min_duration_seconds=min_duration,
             range_start_seconds=range_start_seconds,
             range_duration_seconds=range_duration_seconds,
         )
-        self.analysis_thread = QThread(self)
-        self.analysis_worker = AnalysisWorker(request)
-        self.analysis_worker.moveToThread(self.analysis_thread)
-        self.analysis_thread.started.connect(self.analysis_worker.run)
-        self.analysis_worker.progress.connect(self._set_status)
-        self.analysis_worker.finished.connect(self._analysis_finished)
-        self.analysis_worker.failed.connect(self._analysis_failed)
-        self.analysis_worker.finished.connect(self.analysis_thread.quit)
-        self.analysis_worker.failed.connect(self.analysis_thread.quit)
-        self.analysis_thread.finished.connect(self._analysis_thread_finished)
-        self.controls.set_busy(True)
+        self._analysis_generation += 1
+        generation = self._analysis_generation
+        self._analysis_settings_by_generation[generation] = (backend, threshold, onset_threshold, frame_threshold, min_duration)
+        job = ProcessJob("analysis", parent=self)
+        job.set_request(request)
+        self.analysis_job = job
+        job.progress.connect(lambda progress, generation=generation, job=job: self._analysis_progress(generation, job, progress))
+        job.succeeded.connect(lambda result, generation=generation, job=job: self._analysis_process_finished(generation, job, result))
+        job.failed.connect(lambda message, generation=generation: self._analysis_failed(message, generation=generation))
+        job.cancelled.connect(lambda generation=generation: self._analysis_cancelled(generation))
+        job.done.connect(lambda generation=generation, job=job: self._analysis_job_done(generation, job))
+        self._refresh_job_ui()
         if range_duration_seconds is not None:
             self._set_status(f"Analyzing {range_duration_seconds:.1f}s range from {range_start_seconds:.1f}s with {backend}…")
         else:
             self._set_status(f"Analyzing full audio with {backend}…")
-        self.analysis_thread.start()
+        job.start()
 
     def _analysis_finished(self, result: AnalysisResult) -> None:
         self.state.audio_path = result.audio_path
@@ -531,18 +606,47 @@ class MainWindow(QMainWindow):
             message += f" MIDI preview unavailable: {result.render_error}"
         self._set_status(message)
 
-    def _analysis_failed(self, message: str) -> None:
+    def _analysis_progress(self, generation: int, job: ProcessJob, progress: JobProgress) -> None:
+        if generation != self._analysis_generation or job is not self.analysis_job:
+            return
+        self._job_progress(progress, priority="analysis")
+
+    def _analysis_process_finished(self, generation: int, job: ProcessJob, result: AnalysisResult) -> None:
+        if self._closing or generation != self._analysis_generation or job is not self.analysis_job:
+            return
+        if not isinstance(result, AnalysisResult):
+            self._analysis_failed("analysis result had an unexpected type", generation=generation)
+            return
+        settings = self._analysis_settings_by_generation.get(generation)
+        if settings is not None:
+            backend, threshold, onset_threshold, frame_threshold, min_duration = settings
+            self.state.backend = backend
+            self.state.threshold = threshold
+            self.state.onset_threshold = onset_threshold
+            self.state.frame_threshold = frame_threshold
+            self.state.min_duration = min_duration
+        job.take_work_dir()
+        self._analysis_finished(result)
+
+    def _analysis_failed(self, message: str, *, generation: int | None = None) -> None:
+        if self._closing or (generation is not None and generation != self._analysis_generation):
+            return
         QMessageBox.critical(self, "Analysis failed", message)
         self._set_status(f"Analysis failed: {message}")
 
-    def _analysis_thread_finished(self) -> None:
-        self.controls.set_busy(False)
-        if self.analysis_worker is not None:
-            self.analysis_worker.deleteLater()
-        if self.analysis_thread is not None:
-            self.analysis_thread.deleteLater()
-        self.analysis_worker = None
-        self.analysis_thread = None
+    def _analysis_cancelled(self, generation: int) -> None:
+        if generation != self._analysis_generation:
+            return
+        self._set_status("Analysis cancelled. Previous transcription preserved.")
+
+    def _analysis_job_done(self, generation: int, job: ProcessJob) -> None:
+        if job is self.analysis_job:
+            self.analysis_job = None
+        for old_generation in list(self._analysis_settings_by_generation):
+            if old_generation <= generation:
+                self._analysis_settings_by_generation.pop(old_generation, None)
+        self._refresh_job_ui()
+        self._maybe_finish_deferred_close()
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
         self._update_heatmap_view_height()
@@ -564,21 +668,138 @@ class MainWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if self._final_close:
+            self._cleanup_owned_dirs()
+            if self in self._deferred_close_windows:
+                self._deferred_close_windows.remove(self)
+            super().closeEvent(event)
+            return
+        self._closing = True
+        self._audio_load_generation += 1
+        self._analysis_generation += 1
+        self._preview_request_id += 1
         self.preview_debounce_timer.stop()
-        for thread, _worker in list(self.preview_runs) + list(self.audio_load_runs):
-            thread.quit()
-            thread.wait(2000)
-        # Release the WAV the midi player holds (an analysis or edit-preview
-        # render) before removing the dirs those files live in.
+        self._stop_playback()
         self.midi_player.stop()
         self.midi_player.setSource(QUrl())
+        self._cancel_all_jobs()
+        self._refresh_job_ui()
+        self._pump_job_shutdown_events(250)
+        if self._has_active_jobs():
+            event.ignore()
+            if self not in self._deferred_close_windows:
+                self._deferred_close_windows.append(self)
+            self.hide()
+            self._show_progress(indeterminate=True)
+            self._set_status("Stopping background jobs…")
+            return
+        self._final_close = True
+        self._cleanup_owned_dirs()
+        super().closeEvent(event)
+
+    def _cancel_current_job(self) -> None:
+        cancelled = False
+        if self.analysis_job is not None:
+            self.analysis_job.cancel()
+            cancelled = True
+        if self.audio_load_job is not None:
+            self.audio_load_job.cancel()
+            cancelled = True
+        if cancelled:
+            self._show_progress(indeterminate=True)
+            self._set_status("Cancelling background job…")
+            self._refresh_job_ui()
+        else:
+            self._set_status("No cancellable job is running.")
+
+    def _cancel_all_jobs(self) -> None:
+        if self.analysis_job is not None:
+            self.analysis_job.cancel()
+        if self.audio_load_job is not None:
+            self.audio_load_job.cancel()
+        for _generation, job in list(self.preview_jobs):
+            job.cancel()
+        for job in list(self._stale_jobs):
+            job.cancel()
+
+    def _has_active_jobs(self) -> bool:
+        jobs = [self.analysis_job, self.audio_load_job, *self._stale_jobs, *(job for _generation, job in self.preview_jobs)]
+        return any(job is not None and not job.is_finished for job in jobs)
+
+    def _pump_job_shutdown_events(self, timeout_ms: int) -> None:
+        deadline = QElapsedTimer()
+        deadline.start()
+        while self._has_active_jobs() and deadline.elapsed() < timeout_ms:
+            QApplication.processEvents()
+
+    def _maybe_finish_deferred_close(self) -> None:
+        if not self._closing or self._has_active_jobs():
+            return
+        self._final_close = True
+        self._hide_progress()
+        QTimer.singleShot(0, self.close)
+
+    def _cleanup_owned_dirs(self) -> None:
         if self._preview_dir is not None:
-            shutil.rmtree(self._preview_dir, ignore_errors=True)
+            self._retire_preview_dir(self._preview_dir)
             self._preview_dir = None
+        self._retry_retired_preview_dirs()
         if self._analysis_dir is not None:
             shutil.rmtree(self._analysis_dir, ignore_errors=True)
             self._analysis_dir = None
-        super().closeEvent(event)
+
+    def _retire_preview_dir(self, path: Path) -> None:
+        if self._try_remove_dir(path):
+            return
+        if path not in self._retired_preview_dirs:
+            self._retired_preview_dirs.append(path)
+
+    def _retry_retired_preview_dirs(self) -> None:
+        self._retired_preview_dirs = [path for path in self._retired_preview_dirs if not self._try_remove_dir(path)]
+
+    @staticmethod
+    def _try_remove_dir(path: Path) -> bool:
+        if not path.exists():
+            return True
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            return False
+        return not path.exists()
+
+    def _refresh_job_ui(self) -> None:
+        analysis_running = self.analysis_job is not None and not self.analysis_job.is_finished
+        cancellable_running = analysis_running or (self.audio_load_job is not None and not self.audio_load_job.is_finished)
+        self.controls.set_busy(analysis_running)
+        self.controls.set_cancellable(cancellable_running)
+        if self._has_active_jobs():
+            self.progress_bar.show()
+        else:
+            self._hide_progress()
+
+    def _job_progress(self, progress: JobProgress, *, priority: str) -> None:
+        if priority == "preview" and (self.analysis_job is not None or self.audio_load_job is not None):
+            return
+        if priority == "audio-load" and self.analysis_job is not None:
+            return
+        if progress.total is not None and progress.total > 0 and progress.completed is not None:
+            self.progress_bar.setRange(0, int(progress.total))
+            self.progress_bar.setValue(max(0, min(int(progress.completed), int(progress.total))))
+            self.progress_bar.show()
+        else:
+            self._show_progress(indeterminate=True)
+        self._set_status(progress.message)
+
+    def _show_progress(self, *, indeterminate: bool) -> None:
+        if indeterminate:
+            self.progress_bar.setRange(0, 0)
+        self.progress_bar.show()
+
+    def _hide_progress(self) -> None:
+        if not self._has_active_jobs():
+            self.progress_bar.hide()
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(0)
 
     def _retune_from_controls(self) -> None:
         if self.state.heatmap is None:
@@ -779,60 +1000,77 @@ class MainWindow(QMainWindow):
         self.preview_debounce_timer.start()
         return " MIDI preview updating…"
 
-    def _preview_paths(self) -> tuple[Path, Path]:
-        if self._preview_dir is None:
-            self._preview_dir = Path(tempfile.mkdtemp(prefix="notegrabber-gui-edit-"))
-        return self._preview_dir / "edited.mid", self._preview_dir / "edited.wav"
-
-    def _build_preview_request(self, notes: list[GuiMidiNote]) -> MidiPreviewRequest:
-        midi_path, wav_path = self._preview_paths()
+    def _build_preview_request(self, notes: list[GuiMidiNote], work_dir: Path) -> MidiPreviewRequest:
         return MidiPreviewRequest(
             render_id=self._preview_request_id,
             notes=self._notes_for_midi_preview(notes),
-            midi_path=midi_path,
-            wav_path=wav_path,
+            midi_path=work_dir / "edited.mid",
+            wav_path=work_dir / "edited.wav",
             silent_duration_seconds=max(1.0, self.waveform.duration_seconds()),
         )
 
     def _start_preview_render(self) -> None:
         if self._pending_preview_notes is None:
             return
-        request = self._build_preview_request(self._pending_preview_notes)
+        notes = self._pending_preview_notes
         self._pending_preview_notes = None
-        thread = QThread(self)
-        worker = MidiPreviewWorker(request)
-        self.preview_runs.append((thread, worker))
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(self._preview_render_finished)
-        worker.failed.connect(self._preview_render_failed)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(lambda thread=thread, worker=worker: self._preview_thread_finished(thread, worker))
-        thread.start()
+        # Newer preview work supersedes and cancels older work; every generation
+        # writes into its own child-owned directory so stale work cannot overwrite
+        # an accepted WAV.
+        for _generation, old_job in list(self.preview_jobs):
+            old_job.cancel()
+        job = ProcessJob("preview", parent=self)
+        request = self._build_preview_request(notes, job.work_dir)
+        job.set_request(request)
+        generation = request.render_id
+        self.preview_jobs.append((generation, job))
+        job.progress.connect(lambda progress, generation=generation, job=job: self._preview_progress(generation, job, progress))
+        job.succeeded.connect(lambda result, generation=generation, job=job: self._preview_process_finished(generation, job, result))
+        job.failed.connect(lambda message, request=request: self._preview_render_failed(request, message))
+        job.done.connect(lambda generation=generation, job=job: self._preview_job_done(generation, job))
+        self._refresh_job_ui()
+        job.start()
 
-    def _preview_thread_finished(self, thread: QThread, worker: MidiPreviewWorker) -> None:
-        self.preview_runs = [(run_thread, run_worker) for run_thread, run_worker in self.preview_runs if run_thread is not thread]
-        worker.deleteLater()
-        thread.deleteLater()
+    def _preview_progress(self, generation: int, job: ProcessJob, progress: JobProgress) -> None:
+        if generation != self._preview_request_id or not any(run_job is job for _run_generation, run_job in self.preview_jobs):
+            return
+        self._job_progress(progress, priority="preview")
 
-    def _preview_render_finished(self, result: MidiPreviewResult) -> None:
+    def _preview_process_finished(self, generation: int, job: ProcessJob, result: MidiPreviewResult) -> None:
+        if self._closing or generation != self._preview_request_id or not isinstance(result, MidiPreviewResult) or result.render_id != self._preview_request_id:
+            return
+        accepted_dir = job.take_work_dir()
+        self._preview_render_finished(result, accepted_dir)
+
+    def _preview_job_done(self, generation: int, job: ProcessJob) -> None:
+        self.preview_jobs = [(run_generation, run_job) for run_generation, run_job in self.preview_jobs if run_job is not job]
+        self._refresh_job_ui()
+        self._maybe_finish_deferred_close()
+
+    def _preview_render_finished(self, result: MidiPreviewResult, work_dir: Path | None = None) -> None:
         if result.render_id != self._preview_request_id:
             return  # superseded by a newer edit; ignore this stale render
         previous_display_seconds = self._display_seconds_from_midi_position(self.midi_player.position())
+        old_preview_dir = self._preview_dir
+        if work_dir is not None:
+            self._preview_dir = work_dir
         self.state.rendered_midi_wav = result.rendered_wav
         self.state.midi_preview_offset_seconds = self.state.analysis_start_seconds if self.state.analysis_duration_seconds is not None else 0.0
         self.midi_player.setSource(QUrl.fromLocalFile(str(result.rendered_wav)))
         if previous_display_seconds > 0:
             self.midi_player.setPosition(self._midi_position_from_display_seconds(previous_display_seconds))
+        if old_preview_dir is not None and old_preview_dir != self._preview_dir:
+            self._retire_preview_dir(old_preview_dir)
+        self._retry_retired_preview_dirs()
         self.transport.set_playback_available(original=self.state.audio_path is not None, midi=True)
         self._set_status("MIDI preview re-rendered.")
 
     def _preview_render_failed(self, request: MidiPreviewRequest, message: str) -> None:
-        if request.render_id != self._preview_request_id:
+        if self._closing or request.render_id != self._preview_request_id:
             return
         self.state.rendered_midi_wav = None
         self.midi_player.setSource(QUrl())
+        self._retry_retired_preview_dirs()
         self.transport.set_playback_available(original=self.state.audio_path is not None, midi=False)
         self._set_status(f"MIDI preview unavailable: {message}")
 
@@ -843,14 +1081,16 @@ class MainWindow(QMainWindow):
             self.preview_debounce_timer.stop()
         if self._pending_preview_notes is None:
             return
-        request = self._build_preview_request(self._pending_preview_notes)
+        work_dir = Path(tempfile.mkdtemp(prefix="notegrabber-gui-preview-sync-"))
+        request = self._build_preview_request(self._pending_preview_notes, work_dir)
         self._pending_preview_notes = None
         try:
             rendered_wav = render_midi_preview(request)
         except Exception as exc:
+            shutil.rmtree(work_dir, ignore_errors=True)
             self._preview_render_failed(request, str(exc))
             return
-        self._preview_render_finished(MidiPreviewResult(render_id=request.render_id, rendered_wav=rendered_wav))
+        self._preview_render_finished(MidiPreviewResult(render_id=request.render_id, rendered_wav=rendered_wav), work_dir)
 
     def _notes_for_midi_preview(self, notes: list[GuiMidiNote]) -> list[GuiMidiNote]:
         """Return notes in the local MIDI-preview timeline.
