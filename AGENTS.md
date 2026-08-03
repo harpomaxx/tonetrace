@@ -54,6 +54,23 @@ Tuning flags available on `analyze`:
 - `--frame-threshold` — Basic Pitch frame threshold.
 - `--min-duration` — minimum note duration in seconds for CQT/Basic Pitch extraction.
 
+## Issue workflow
+
+When fixing an issue or building a feature, follow these steps in order. **Do not merge without the user's go-ahead** — they test the change in the real GUI first, because most of this project's behaviour (gestures, layout, playback) cannot be judged from a passing test suite.
+
+1. **Sync and branch.** Start from an up-to-date `main` (`git fetch origin`, confirm the working tree is clean) and create a topic branch: `feat/<slug>` for enhancements, `fix/<slug>` for bugs, `perf/<slug>` for performance work.
+2. **Fix the issue.** Verify the issue's own code references before relying on them — line numbers in older issues drift as files grow.
+3. **Run the tests**, and add new ones when the change is not already covered. A regression test should be checked to actually fail against the old behaviour, otherwise it pins nothing. Run the full suite before handing over, not just the new file.
+4. **Stop and hand over for testing.** Report what changed, how to exercise it in the GUI, any decisions made, and anything deliberately left out. Then wait.
+5. **Commit, push, and open a PR** once the user confirms. Explain *why* in the commit body — the measured symptom, the approach, and any approach that was tried and rejected.
+6. **Merge** only when the user asks for it.
+
+Notes:
+
+- **Keep bare `#N` out of PR titles for partial work.** GitHub treats the title as a closing context, so a title containing `(#10)` closes issue #10 on merge even when the body says "Part of #10". Reference the issue in the body instead, or expect to reopen it.
+- Conversely, `Closes #N` in the commit or PR body is what actually auto-closes an issue; a plain `(#13, #19)` reference does not.
+- Prefer several small PRs over one large one when an issue lists independent improvements; issues often say so themselves.
+
 ## Test workflow
 
 Install dev dependencies:
@@ -69,13 +86,13 @@ Run tests:
 NOTEGRABBER_BIN=notegrabber python3 -m pytest -q
 ```
 
-Current expected result: **287 passed** when optional ML and PySide6 GUI dependencies are installed. (Stem-separation tests mock `demucs_onnx`, so they run without downloading the model.)
+Current expected result: **317 passed** when optional ML and PySide6 GUI dependencies are installed. (Stem-separation tests mock `demucs_onnx`, so they run without downloading the model.)
 
 Quick GUI manual check:
 
 ```bash
 notegrabber-gui oxi.wav
-# Click Analyze, then test Play both, piano-roll note selection/drag/resize/delete, inspector edits, and Export MIDI.
+# Click Analyze, then test Play both, piano-roll note selection/drag/resize/delete, double-click on empty space to add a note, Ctrl+wheel and Shift+wheel zoom, inspector edits, and Export MIDI.
 ```
 
 Incremental markers:
@@ -99,7 +116,7 @@ These are working artifacts, not core source code.
 
 ## Development notes
 
-- GitHub repo: `harpomaxx/tonetrace`; default branch is `main`. The backlog lives in [GitHub Issues](https://github.com/harpomaxx/tonetrace/issues) (the old in-repo `issues/` folder was removed). Issues #1–#8, #13, #19, and #27 are implemented (vectorized paint paths, key/stats, cancellable process jobs with clean shutdown, and compact heatmap storage).
+- GitHub repo: `harpomaxx/tonetrace`; default branch is `main`. The backlog lives in [GitHub Issues](https://github.com/harpomaxx/tonetrace/issues) (the old in-repo `issues/` folder was removed). Issues #1–#8, #13, #19, #27, and #37 are implemented (vectorized paint paths, key/stats, cancellable process jobs with clean shutdown, compact heatmap storage, and double-click note creation). Issue #10 is partially done: cursor-anchored zoom has landed; the fit/reset controls have not.
 - Packaging: `python3 -m build` produces a wheel + sdist in `dist/` that install and run outside the source tree (`pip install 'dist/*.whl[gui]'`, then `notegrabber-gui` from anywhere). The GUI icon SVGs under `gui/resources/` are bundled via `[tool.hatch.build.targets.wheel] artifacts` and loaded at runtime with `Path(__file__)`, so keep that relative layout intact. `dist/`/`build/` are gitignored.
 - Keep the existing CLI contract stable unless tests/docs are updated together.
 - Prefer adding tests before changing analysis behavior.
@@ -113,7 +130,7 @@ These are working artifacts, not core source code.
 User priorities for the next work are **UI polish, speed/responsiveness, playback/playhead sync, and zoom/navigation polish**.
 
 1. **Playback/playhead synchronization polish**: smooth interpolated playhead sync is implemented for waveform + heatmap, with MIDI-follow correction during Play both. The resync loop checks drift every 12 ticks (~192ms) with a 120ms tolerance; a tighter cadence/tolerance was tried and reverted because `QMediaPlayer.position()` updates in coarse steps on this system's FFmpeg backend, causing visible backward playhead snaps. The interpolated clock also freezes while either `QMediaPlayer` reports `StalledMedia`/`BufferingMedia` so the playhead does not race ahead of stuttering audio. Range-analysis MIDI preview renders in a local timeline and maps back to the full-song waveform/heatmap timeline, clamping at the selected range end. Continue manual checks with edited MIDI preview and Qt audio backend edge cases, especially real stall/buffering behavior on large files.
-2. **Zoom/navigation polish**: note edits/clicks no longer compound the heatmap zoom by recalculating fit from the already-zoomed canvas. Pitch-row vertical zoom is implemented with Shift+wheel, and time zoom remains Ctrl+wheel; the left transcription box no longer contains zoom sliders. Continue improving horizontal zoom-out/in behavior, preserve cursor-centered zoom, add fit-to-range / fit-to-selection controls, and keep horizontal scroll position intuitive when zoom changes.
+2. **Zoom/navigation polish**: note edits/clicks no longer compound the heatmap zoom by recalculating fit from the already-zoomed canvas. Pitch-row vertical zoom is implemented with Shift+wheel, and time zoom remains Ctrl+wheel; the left transcription box no longer contains zoom sliders. Cursor-anchored zoom is implemented on both axes: Ctrl+wheel holds the time under the cursor and Shift+wheel holds the pitch, by solving for the scroll offset that puts the anchored point back under the cursor at the new scale. Zoom with no cursor (buttons, keyboard) holds the viewport centre. Note the inherent limit at the top/left edge — honouring the anchor while zooming out there would need a negative scroll offset, so it clamps at 0 and the anchored point drifts for those last clicks. Remaining: fit-to-range / fit-to-selection controls and a fit-to-full-song / reset-zoom control.
 3. **Speed/responsiveness**: playhead updates repaint only narrow regions; the heatmap paint uses compact/vectorized numpy storage (issues #1/#27); per-drag note repaint is partial (issue #3); waveform/overview paths are vectorized (issues #5/#6); and audio-load, analysis, and MIDI-preview work now runs in cancellable isolated processes with stage progress and safe shutdown (issues #13/#19). Remaining: optional finer-grained backend progress and overview/heatmap level-of-detail caching.
 4. **UI polish**: heatmap view height is now capped relative to the window so vertical pitch zoom does not hide the inspector/sequence area, and the left-panel action buttons are placed above reserved/stub controls so Open/Analyze/Delete/Export remain visible. Continue refining the ToneTrace dark pro-DAW layout, especially control density, selected-region affordances, selected-note editing affordances, and visual hierarchy between overview waveform, detail heatmap, and sequence table.
 5. **Editing workflow polish**: add keyboard nudging and optional ghost previews during drag; committed edits already support undo/redo.
