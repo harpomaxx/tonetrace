@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -51,6 +52,8 @@ class AnalysisControls(QWidget):
     cancel_requested = Signal()
     export_requested = Signal()
     delete_requested = Signal()
+    fit_requested = Signal()
+    reset_zoom_requested = Signal()
     open_requested = Signal()
     retune_requested = Signal()
     overlay_toggled = Signal(bool)
@@ -91,6 +94,13 @@ class AnalysisControls(QWidget):
         self.cancel_button = self._action_button("Cancel", role="danger", icon_name="stop")
         self.export_button = self._action_button("Export", role="primary", icon_name="export")
         self.delete_button = self._action_button("Delete", role="danger", icon_name="trash")
+        self.fit_button = self._action_button("Fit", role="secondary", icon_name="fit")
+        self.fit_button.setToolTip(
+            "Zoom to the selected notes. With nothing selected, fits the analysis "
+            "range, or the whole song."
+        )
+        self.reset_zoom_button = self._action_button("Reset", role="secondary", icon_name="reset")
+        self.reset_zoom_button.setToolTip("Reset zoom to fit the whole song.")
         self.open_button.setToolTip("Choose an audio file to transcribe")
         self.analyze_button.setToolTip("Run the selected transcription backend")
         self.cancel_button.setToolTip("Cancel the current analysis or background audio overview")
@@ -122,6 +132,8 @@ class AnalysisControls(QWidget):
         self.cancel_button.clicked.connect(self.cancel_requested.emit)
         self.export_button.clicked.connect(self.export_requested.emit)
         self.delete_button.clicked.connect(self.delete_requested.emit)
+        self.fit_button.clicked.connect(self.fit_requested.emit)
+        self.reset_zoom_button.clicked.connect(self.reset_zoom_requested.emit)
         self.show_overlay.toggled.connect(self.overlay_toggled.emit)
         # Checkbox reads "Notes only", so emit "show heatmap" as its inverse to
         # mirror the set_show_notes wiring on the piano roll.
@@ -209,6 +221,14 @@ class AnalysisControls(QWidget):
         row.addWidget(self.cancel_button)
         row.addWidget(self.delete_button)
         row.addWidget(self.export_button)
+        # Zoom controls are a different concern from the file/edit actions, so a
+        # thin rule separates them inside the same bar.
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.VLine)
+        divider.setObjectName("actionDivider")
+        row.addWidget(divider)
+        row.addWidget(self.fit_button)
+        row.addWidget(self.reset_zoom_button)
         return group
 
     def _build_appearance_group(self) -> QGroupBox:

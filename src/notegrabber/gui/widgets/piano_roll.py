@@ -208,7 +208,10 @@ class PianoRollWidget(QWidget):
     def set_horizontal_zoom(self, zoom: float) -> None:
         """Set horizontal zoom, where 1.0 fits the whole analysis in the viewport."""
 
-        self.horizontal_zoom = max(1.0, min(32.0, float(zoom)))
+        # Cap raised from 32 for Fit (issue #10): fitting a couple of seconds
+        # inside a multi-minute song needs far more than 32x, and the canvas
+        # stays viewport-bounded at any zoom, so a deeper cap costs nothing.
+        self.horizontal_zoom = max(1.0, min(256.0, float(zoom)))
         self.seconds_per_pixel = max(0.0005, self.fit_seconds_per_pixel / self.horizontal_zoom)
         self._update_canvas_size()
         self.updateGeometry()
@@ -1314,6 +1317,78 @@ class PianoRollWidget(QWidget):
                 start_seconds=max(0.0, note.start_seconds + delta_seconds),
             )
         return None
+
+    # Fraction of the viewport left as breathing room around a fitted span, so
+    # the fitted notes do not sit flush against the edges.
+    FIT_MARGIN = 0.08
+
+    def fit_to_span(
+        self,
+        start_seconds: float,
+        end_seconds: float,
+        *,
+        pitch_range: tuple[int, int] | None = None,
+    ) -> None:
+        """Zoom and scroll so a time span (and optionally a pitch span) fills the view.
+
+        Fitting notes means fitting both axes: zooming only in time leaves a
+        selection as a thin horizontal sliver. ``pitch_range`` of None leaves the
+        vertical zoom alone, which is what a time-only fit (analysis range, whole
+        song) wants.
+        """
+
+        if self.heatmap is None:
+            return
+        span = max(1e-6, float(end_seconds) - float(start_seconds))
+        span *= 1.0 + self.FIT_MARGIN * 2
+
+        # Horizontal: zoom is relative to the whole-song fit, so the ratio of the
+        # full timeline to the target span is exactly the zoom needed.
+        viewport_width = max(1, self._viewport_width() - self.keyboard_width)
+        target_seconds_per_pixel = span / viewport_width
+        self.set_horizontal_zoom(self.fit_seconds_per_pixel / max(1e-9, target_seconds_per_pixel))
+
+        if pitch_range is not None:
+            low, high = pitch_range
+            rows = max(1, abs(int(high) - int(low)) + 1)
+            rows = int(math.ceil(rows * (1.0 + self.FIT_MARGIN * 2)))
+            target_height = max(1, self._viewport_height() // rows)
+            self.set_vertical_zoom(target_height / max(1, self.base_note_height))
+
+        self._scroll_to_span(start_seconds, end_seconds, pitch_range)
+        self.zoom_changed.emit(self.horizontal_zoom)
+        self.vertical_zoom_changed.emit(self.vertical_zoom)
+
+    def _scroll_to_span(
+        self,
+        start_seconds: float,
+        end_seconds: float,
+        pitch_range: tuple[int, int] | None,
+    ) -> None:
+        """Centre the given span in the viewport after a zoom change."""
+
+        bar = self._horizontal_scroll_bar()
+        if bar is not None:
+            centre_x = (self.x_for_seconds(start_seconds) + self.x_for_seconds(end_seconds)) / 2.0
+            bar.setValue(max(0, round(centre_x - self._viewport_width() / 2.0)))
+        vertical = self._vertical_scroll_bar()
+        if vertical is not None and pitch_range is not None:
+            tops = [
+                self._y_for_pitch(pitch)
+                for pitch in pitch_range
+                if self._y_for_pitch(pitch) is not None
+            ]
+            if tops:
+                centre_y = (min(tops) + max(tops) + self.note_height) / 2.0
+                vertical.setValue(max(0, round(centre_y - self._viewport_height() / 2.0)))
+
+    def _y_for_pitch(self, pitch: int) -> float | None:
+        """Top y of the row a pitch is drawn on, or None if it has no row."""
+
+        row = self._pitch_to_row.get(int(pitch))
+        if row is None or self.heatmap is None:
+            return None
+        return (self.heatmap.note_count - 1 - row) * self.note_height
 
     def _drawable_pitch_range(self) -> tuple[int, int]:
         """Lowest and highest pitch the heatmap has a row for.

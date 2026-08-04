@@ -417,6 +417,8 @@ class MainWindow(QMainWindow):
         self.controls.cancel_requested.connect(self._cancel_current_job)
         self.controls.export_requested.connect(self._export_midi_dialog)
         self.controls.delete_requested.connect(self._delete_selected_note)
+        self.controls.fit_requested.connect(self._fit_zoom)
+        self.controls.reset_zoom_requested.connect(self._reset_zoom)
         self.controls.retune_requested.connect(self._retune_from_controls)
         self.controls.overlay_toggled.connect(self.piano_roll.set_show_notes)
         self.controls.heatmap_toggled.connect(self.piano_roll.set_show_heatmap)
@@ -1100,6 +1102,60 @@ class MainWindow(QMainWindow):
             f"{verb} {len(anchored)} {plural} at {at_seconds:.2f}s. "
             f"Export writes {len(self.state.tuned_notes)} edited notes.{preview_status}"
         )
+
+    def _fit_zoom(self) -> None:
+        """Zoom to whatever the user is most plausibly working on (issue #10).
+
+        Selected notes first -- that is what editing leaves you holding, and the
+        one span there is otherwise no way to zoom to. Failing that the dragged
+        analysis range, which the user set deliberately, and failing that the
+        whole song.
+        """
+
+        if self.state.heatmap is None:
+            self._set_status("Nothing to fit: analyze audio first.")
+            return
+
+        chosen = self._selected_notes()
+        if chosen:
+            start = min(note.start_seconds for note in chosen)
+            end = max(note.end_seconds for note in chosen)
+            pitches = [note.pitch for note in chosen]
+            self.piano_roll.fit_to_span(
+                start, end, pitch_range=(min(pitches), max(pitches))
+            )
+            plural = "note" if len(chosen) == 1 else "notes"
+            self._set_status(f"Zoomed to {len(chosen)} selected {plural}.")
+            return
+
+        start = self.waveform.selection_start_seconds
+        length = self.waveform.selection_duration_seconds
+        if start is not None and length is not None and length > 0:
+            self.piano_roll.fit_to_span(start, start + length)
+            self._set_status(
+                f"Zoomed to the analysis range ({start:.2f}s–{start + length:.2f}s). "
+                "Select notes and press Fit to zoom to them."
+            )
+            return
+
+        self._reset_zoom()
+
+    def _reset_zoom(self) -> None:
+        """Zoom back out to the whole song (issue #10)."""
+
+        if self.state.heatmap is None:
+            return
+        # Zoom 1.0 *is* the whole-song fit, so set it directly rather than
+        # fitting a span, which would leave a margin and a non-zero scroll.
+        self.piano_roll.zoom_to(1.0)
+        self.piano_roll.set_vertical_zoom(1.0)
+        bar = self.piano_roll._horizontal_scroll_bar()
+        if bar is not None:
+            bar.setValue(0)
+        vertical = self.piano_roll._vertical_scroll_bar()
+        if vertical is not None:
+            vertical.setValue(0)
+        self._set_status("Zoom reset to the whole song.")
 
     def _delete_selected_note(self) -> None:
         """Delete every selected note as one undoable step (issue #35)."""
