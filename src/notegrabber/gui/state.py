@@ -36,6 +36,7 @@ __all__ = [
     "ProjectState",
     "add_gui_note",
     "add_gui_notes",
+    "audible_gui_notes",
     "delete_gui_note",
     "delete_gui_notes",
     "gui_note_to_midi",
@@ -46,6 +47,7 @@ __all__ = [
     "midi_notes_to_gui",
     "normalized_gui_note",
     "retune_notes_from_heatmap",
+    "set_gui_notes_muted",
     "update_gui_note",
 ]
 
@@ -63,6 +65,10 @@ class GuiMidiNote:
     # semitone_offset) points across the note. ``None`` means no bend. Used to
     # draw the bend curve in the piano roll; carried through edits unchanged.
     pitch_bends: tuple[tuple[float, float], ...] | None = None
+    # Muted notes stay in the project and on the roll but are excluded from the
+    # MIDI preview and from export, so auditioning "which notes to keep" is
+    # non-destructive (issue #66).
+    muted: bool = False
 
     @property
     def end_seconds(self) -> float:
@@ -159,10 +165,34 @@ def gui_note_to_midi(note: GuiMidiNote) -> MidiNote:
     )
 
 
-def gui_notes_to_midi(notes: list[GuiMidiNote]) -> list[MidiNote]:
-    """Convert GUI notes back to internal MIDI notes for export."""
+def audible_gui_notes(notes: list[GuiMidiNote]) -> list[GuiMidiNote]:
+    """Return only the notes that should sound: everything not muted (issue #66)."""
 
-    return [gui_note_to_midi(note) for note in notes]
+    return [note for note in notes if not note.muted]
+
+
+def gui_notes_to_midi(notes: list[GuiMidiNote]) -> list[MidiNote]:
+    """Convert GUI notes back to internal MIDI notes for export.
+
+    Muted notes are dropped here, so every export path excludes them without
+    each caller having to remember.
+    """
+
+    return [gui_note_to_midi(note) for note in notes if not note.muted]
+
+
+def set_gui_notes_muted(
+    notes: list[GuiMidiNote],
+    indices: set[int],
+    muted: bool,
+) -> list[GuiMidiNote]:
+    """Return a copy of notes with the indexed ones set to ``muted``."""
+
+    updated = list(notes)
+    for index in indices:
+        if 0 <= index < len(updated):
+            updated[index] = replace(updated[index], muted=bool(muted))
+    return updated
 
 
 def delete_gui_note(notes: list[GuiMidiNote], index: int) -> list[GuiMidiNote]:

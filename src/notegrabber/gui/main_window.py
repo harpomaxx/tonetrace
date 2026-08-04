@@ -38,7 +38,7 @@ from .edit_history import EditHistory
 from .transcription_stats import compute_stats
 from .midi_preview_worker import MidiPreviewRequest, MidiPreviewResult, render_midi_preview
 from .process_jobs import JobArtifact, JobProgress, ProcessJob
-from .state import GuiMidiNote, ProjectState, add_gui_note, add_gui_notes, delete_gui_notes, gui_notes_to_midi, normalized_gui_note, retune_notes_from_heatmap
+from .state import GuiMidiNote, ProjectState, add_gui_note, add_gui_notes, audible_gui_notes, delete_gui_notes, gui_notes_to_midi, normalized_gui_note, set_gui_notes_muted, retune_notes_from_heatmap
 from .theme import THEMES, active_theme, build_stylesheet, polish_button, set_active_theme
 from .widgets.collapsible import CollapsibleSection
 from .widgets.controls import AnalysisControls
@@ -752,7 +752,39 @@ class MainWindow(QMainWindow):
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self._delete_selected_note()
             return True
+        if event.key() == Qt.Key.Key_M and not event.modifiers():
+            return self._toggle_selection_muted()
         return self._nudge_from_key(event)
+
+    def _toggle_selection_muted(self) -> bool:
+        """M: mute or unmute the selection as one undo step (issue #66).
+
+        Mixed selections mute wholesale rather than flipping each note, which is
+        what "mute this lot" means; pressing M again unmutes them all.
+        """
+
+        if self.state.heatmap is None or not self.selected_indices:
+            return False
+        current = list(self.state.current_notes)
+        indices = {index for index in self.selected_indices if 0 <= index < len(current)}
+        if not indices:
+            return False
+        muted = not all(current[index].muted for index in indices)
+        self.edit_history.record(current)
+        self.state.tuned_notes = set_gui_notes_muted(current, indices, muted)
+        self._set_display_notes(self.state.tuned_notes)
+        self.piano_roll.set_selected_indices(indices)
+        preview_status = self._refresh_midi_preview(self.state.tuned_notes)
+        count = len(indices)
+        plural = "note" if count == 1 else "notes"
+        action = "Muted" if muted else "Unmuted"
+        audible = len(audible_gui_notes(self.state.tuned_notes))
+        audible_plural = "note" if audible == 1 else "notes"
+        self._set_status(
+            f"{action} {count} {plural}. "
+            f"Export writes {audible} audible {audible_plural}.{preview_status}"
+        )
+        return True
 
     def _nudge_from_key(self, event) -> bool:
         """Nudge the selection with the arrow keys or +/- (issue #65).
@@ -1687,6 +1719,9 @@ class MainWindow(QMainWindow):
         to the full waveform/heatmap timeline.
         """
 
+        # Muted notes are dropped first, so they never reach the preview render
+        # regardless of which timeline branch runs below (issue #66).
+        notes = audible_gui_notes(notes)
         if self.state.analysis_duration_seconds is None:
             return list(notes)
         start = self.state.analysis_start_seconds
