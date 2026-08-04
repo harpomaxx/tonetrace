@@ -159,6 +159,15 @@ class MainWindow(QMainWindow):
         self.midi_audio = QAudioOutput(self)
         self.original_player = QMediaPlayer(self)
         self.midi_player = QMediaPlayer(self)
+        # A separate player for note audition (issue #67), so previewing a note
+        # never disturbs the transport's position or playback state.
+        self.audition_audio = QAudioOutput(self)
+        self.audition_player = QMediaPlayer(self)
+        self.audition_player.setAudioOutput(self.audition_audio)
+        self.audition_audio.setVolume(self.SOLO_VOLUME)
+        self.audition_enabled = True
+        self._audition_dir: Path | None = None
+        self._audition_generation = 0
         self.original_player.setAudioOutput(self.original_audio)
         self.midi_player.setAudioOutput(self.midi_audio)
         self.original_audio.setVolume(self.SOLO_VOLUME)
@@ -423,6 +432,7 @@ class MainWindow(QMainWindow):
         self.controls.overlay_toggled.connect(self.piano_roll.set_show_notes)
         self.controls.heatmap_toggled.connect(self.piano_roll.set_show_heatmap)
         self.controls.pitch_bends_toggled.connect(self.piano_roll.set_show_pitch_bends)
+        self.controls.audition_toggled.connect(self.set_audition_enabled)
         self.controls.theme_changed.connect(self._on_theme_changed)
         self.transport.play_both_requested.connect(self._play_both)
         self.transport.play_original_requested.connect(self._play_original)
@@ -441,6 +451,10 @@ class MainWindow(QMainWindow):
         self.waveform.range_selected.connect(self._set_analysis_range_from_waveform)
         self.piano_roll.seek_requested.connect(self._seek_seconds)
         self.piano_roll.note_selected.connect(self._select_note)
+        # Audition is wired to note_selected (a real click on a note) rather than
+        # selection_changed, which also fires for nudges, pastes and rubber-band
+        # sweeps and would retrigger audio constantly (issue #67).
+        self.piano_roll.note_selected.connect(self._audition_selected_index)
         self.piano_roll.note_edited.connect(self._edit_note_from_piano_roll)
         self.piano_roll.note_created.connect(self._create_note_from_piano_roll)
         self.piano_roll.selection_changed.connect(self._on_selection_changed)
@@ -896,6 +910,12 @@ class MainWindow(QMainWindow):
         if self._analysis_dir is not None:
             shutil.rmtree(self._analysis_dir, ignore_errors=True)
             self._analysis_dir = None
+        if self._audition_dir is not None:
+            # Release the file the player may still hold before removing the dir.
+            self.audition_player.stop()
+            self.audition_player.setSource(QUrl())
+            shutil.rmtree(self._audition_dir, ignore_errors=True)
+            self._audition_dir = None
 
     def _retire_preview_dir(self, path: Path) -> None:
         if self._try_remove_dir(path):
@@ -1094,6 +1114,79 @@ class MainWindow(QMainWindow):
     # Small nudge so a duplicate does not land exactly on top of its source,
     # where it would be invisible and impossible to grab.
     DUPLICATE_OFFSET_SECONDS = 0.25
+
+    def _audition_selected_index(self, index: int, _start_seconds: float = 0.0) -> None:
+        """Audition the note a click just selected."""
+
+        notes = self.state.current_notes
+        if 0 <= index < len(notes):
+            self._audition_note(notes[index])
+
+    def _audition_note(self, note: GuiMidiNote) -> None:
+        """Play one note in isolation so it can be judged by ear (issue #67).
+
+        Uses the built-in synth rather than slicing the rendered preview WAV:
+        the preview is optional (it needs TiMidity++ or a completed native
+        render, and may be stale mid-edit), while the synth is always available
+        and gives the same voice. A dedicated player keeps this off the
+        transport, so auditioning never disturbs playback position or state.
+        """
+
+        if not self.audition_enabled or self.state.heatmap is None:
+            return
+        # Never audition mid-drag: a drag emits an edit per tick, which would
+        # retrigger continuously. Keyed on drag_has_moved rather than drag_mode,
+        # because a plain click arms drag_mode *before* emitting note_selected --
+        # testing drag_mode would suppress the very click meant to audition.
+        if self.piano_roll.drag_has_moved:
+            return
+        try:
+            from notegrabber.native_synth import render_note_to_wav
+        except Exception:
+            return
+
+        if self._audition_dir is None:
+            self._audition_dir = Path(tempfile.mkdtemp(prefix="notegrabber-audition-"))
+        # A fresh filename per audition: QMediaPlayer caches by URL, so reusing
+        # one path can replay stale audio.
+        self._audition_generation += 1
+        wav_path = self._audition_dir / f"note-{self._audition_generation}.wav"
+        rendered, _error = render_note_to_wav(
+            wav_path,
+            pitch=note.pitch,
+            duration_seconds=note.duration_seconds,
+            velocity=note.velocity,
+            bend_semitones=note.pitch_bends,
+        )
+        if rendered is None:
+            return
+        self.audition_player.stop()
+        self.audition_player.setSource(QUrl.fromLocalFile(str(rendered)))
+        self.audition_player.setPosition(0)
+        self.audition_player.play()
+        self._prune_audition_files(keep=wav_path)
+
+    def _prune_audition_files(self, *, keep: Path) -> None:
+        """Drop previous audition WAVs, leaving the one now playing."""
+
+        if self._audition_dir is None:
+            return
+        for path in self._audition_dir.glob("note-*.wav"):
+            if path == keep:
+                continue
+            try:
+                path.unlink()
+            except OSError:
+                # Still held by the player on some backends; the directory is
+                # removed wholesale at shutdown, so a leftover is harmless.
+                pass
+
+    def set_audition_enabled(self, enabled: bool) -> None:
+        """Toggle note audition on selection (issue #67)."""
+
+        self.audition_enabled = bool(enabled)
+        if not self.audition_enabled:
+            self.audition_player.stop()
 
     def _selected_notes(self) -> list[GuiMidiNote]:
         """The currently selected notes, in start-time order."""

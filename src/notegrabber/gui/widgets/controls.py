@@ -59,6 +59,7 @@ class AnalysisControls(QWidget):
     overlay_toggled = Signal(bool)
     heatmap_toggled = Signal(bool)
     pitch_bends_toggled = Signal(bool)
+    audition_toggled = Signal(bool)
     theme_changed = Signal(str)  # emits the selected theme id
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -88,6 +89,9 @@ class AnalysisControls(QWidget):
         self.show_pitch_bends = QCheckBox("Show pitch bends")
         self.show_pitch_bends.setChecked(True)
         self.show_pitch_bends.setToolTip("Draw each note's pitch-bend contour (slides, vibrato) as a curve. Most visible when zoomed in; only Basic Pitch produces bends.")
+        self.audition_on_select = QCheckBox("Audition on select")
+        self.audition_on_select.setChecked(True)
+        self.audition_on_select.setToolTip("Play a note on its own when you click it, so you can judge the transcription by ear without starting playback.")
 
         self.open_button = self._action_button("Open", role="secondary", icon_name="folder")
         self.analyze_button = self._action_button("Analyze", role="primary", icon_name="analyze")
@@ -139,6 +143,7 @@ class AnalysisControls(QWidget):
         # mirror the set_show_notes wiring on the piano roll.
         self.notes_only.toggled.connect(lambda checked: self.heatmap_toggled.emit(not checked))
         self.show_pitch_bends.toggled.connect(self.pitch_bends_toggled.emit)
+        self.audition_on_select.toggled.connect(self.audition_toggled.emit)
         self.theme_combo.currentIndexChanged.connect(
             lambda _index: self.theme_changed.emit(self.theme_combo.currentData())
         )
@@ -290,6 +295,7 @@ class AnalysisControls(QWidget):
         form.addRow(self.show_overlay)
         form.addRow(self.notes_only)
         form.addRow(self.show_pitch_bends)
+        form.addRow(self.audition_on_select)
         return group
 
     @staticmethod
