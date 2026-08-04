@@ -695,12 +695,116 @@ class MainWindow(QMainWindow):
         if hasattr(self, "piano_scroll"):
             self.piano_scroll.setMaximumHeight(max(360, round(self.height() * 0.72)))
 
+    # Nudge steps (issue #65). Time is a fixed musical step rather than the
+    # heatmap grid: _grid_interval_seconds returns whole seconds (>= 1s), far too
+    # coarse to fine-tune a note with.
+    NUDGE_SECONDS = 0.05
+    NUDGE_SECONDS_FINE = 0.01
+    NUDGE_SECONDS_COARSE = 0.25
+    NUDGE_VELOCITY = 1
+    NUDGE_VELOCITY_LARGE = 10
+
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt API
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self._delete_selected_note()
             event.accept()
             return
+        if self._nudge_from_key(event):
+            event.accept()
+            return
         super().keyPressEvent(event)
+
+    def _nudge_from_key(self, event) -> bool:
+        """Nudge the selection with the arrow keys or +/- (issue #65).
+
+        Returns True when the key was consumed. Arrows move time and pitch,
+        +/- adjust velocity; Shift is finer/larger and Ctrl is coarser/octave.
+        """
+
+        if self.state.heatmap is None or not self.selected_indices:
+            return False
+        key = event.key()
+        modifiers = event.modifiers()
+        shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+        ctrl = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+
+        if key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            if ctrl:
+                step = self.NUDGE_SECONDS_COARSE
+            elif shift:
+                step = self.NUDGE_SECONDS_FINE
+            else:
+                step = self.NUDGE_SECONDS
+            direction = -1.0 if key == Qt.Key.Key_Left else 1.0
+            return self._nudge_selection(delta_seconds=direction * step)
+
+        if key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            step = 12 if ctrl else 1
+            direction = 1 if key == Qt.Key.Key_Up else -1
+            return self._nudge_selection(delta_pitch=direction * step)
+
+        if key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal, Qt.Key.Key_Minus):
+            step = self.NUDGE_VELOCITY_LARGE if shift else self.NUDGE_VELOCITY
+            direction = -1 if key == Qt.Key.Key_Minus else 1
+            return self._nudge_selection(delta_velocity=direction * step)
+
+        return False
+
+    def _nudge_selection(
+        self,
+        *,
+        delta_seconds: float = 0.0,
+        delta_pitch: int = 0,
+        delta_velocity: int = 0,
+    ) -> bool:
+        """Apply one nudge to every selected note as a single undo step.
+
+        Deltas are clamped as a *group* by the most-constrained member, matching
+        the group drag in #36, so a selection meeting a boundary keeps its
+        relative spacing and intervals instead of collapsing.
+        """
+
+        notes = self.state.current_notes
+        indices = sorted(index for index in self.selected_indices if 0 <= index < len(notes))
+        if not indices:
+            return False
+        chosen = [notes[index] for index in indices]
+
+        if delta_seconds:
+            earliest = min(note.start_seconds for note in chosen)
+            delta_seconds = max(delta_seconds, -earliest)
+        if delta_pitch:
+            floor_pitch, ceiling_pitch = self.piano_roll._drawable_pitch_range()
+            lowest = min(note.pitch for note in chosen)
+            highest = max(note.pitch for note in chosen)
+            delta_pitch = max(delta_pitch, floor_pitch - lowest)
+            delta_pitch = min(delta_pitch, ceiling_pitch - highest)
+        if delta_velocity:
+            lowest_velocity = min(note.velocity for note in chosen)
+            highest_velocity = max(note.velocity for note in chosen)
+            delta_velocity = max(delta_velocity, 1 - lowest_velocity)
+            delta_velocity = min(delta_velocity, 127 - highest_velocity)
+
+        if not delta_seconds and not delta_pitch and not delta_velocity:
+            # Already hard against a boundary: nothing to do, but the key was
+            # still ours, so do not let it scroll the view.
+            return True
+
+        edits = [
+            (
+                index,
+                max(0.0, note.start_seconds + delta_seconds),
+                note.duration_seconds,
+                note.pitch + delta_pitch,
+                note.velocity + delta_velocity,
+            )
+            for index, note in zip(indices, chosen)
+        ]
+        # Reuses the batch path from #36, so this is one undo step and the
+        # sequence table, inspector and MIDI preview all refresh.
+        self._edit_notes_from_piano_roll(edits, True, verb="Nudged")
+        self.piano_roll.set_selected_indices(set(indices))
+        return True
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
         if self._final_close:
@@ -1236,7 +1340,12 @@ class MainWindow(QMainWindow):
             update_preview=committed,
         )
 
-    def _edit_notes_from_piano_roll(self, edits: list, committed: bool = True) -> None:
+    def _edit_notes_from_piano_roll(
+        self,
+        edits: list,
+        committed: bool = True,
+        verb: str = "Moved/resized",
+    ) -> None:
         """Apply a group drag as one undoable edit (issue #36).
 
         Mirrors _edit_note's snapshot discipline: the pre-gesture list is
@@ -1285,7 +1394,7 @@ class MainWindow(QMainWindow):
         self.piano_roll.set_selected_indices(touched)
         preview_status = self._refresh_midi_preview(working)
         self._set_status(
-            f"Moved/resized {len(touched)} notes. "
+            f"{verb} {len(touched)} {'note' if len(touched) == 1 else 'notes'}. "
             f"Export writes {len(working)} edited notes.{preview_status}"
         )
 
