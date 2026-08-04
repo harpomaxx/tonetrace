@@ -191,7 +191,9 @@ def test_run_analysis_request_reports_ordered_stages(tmp_path, monkeypatch):
         progress=messages.append,
     )
 
-    assert messages == ["Preparing analysis…", "Analyzing with cqt…"]
+    # Beat tracking (issue #14) adds a stage after analysis; it runs on the
+    # audio, so it belongs in the worker rather than the per-edit stats path.
+    assert messages == ["Preparing analysis…", "Analyzing with cqt…", "Estimating tempo…"]
     assert result.work_dir == tmp_path / "work"
     assert result.notes[0].pitch == 60
 
