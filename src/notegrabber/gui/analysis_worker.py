@@ -7,6 +7,7 @@ import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 from notegrabber.analyzer import BackendName, analyze_wav_to_midi_with_heatmap_data
+from notegrabber.beat_tempo import estimate_beats_from_audio
 from notegrabber.midi import MidiNote, TICKS_PER_SECOND, write_midi
 from notegrabber.midi_render import render_midi_to_wav
 
@@ -60,6 +61,14 @@ class AnalysisResult:
     analysis_start_seconds: float = 0.0
     analysis_duration_seconds: float | None = None
     midi_preview_offset_seconds: float = 0.0
+    # Audio-based tempo from librosa beat tracking (issue #14), computed here
+    # because it needs the audio and must stay off the UI thread. None when
+    # librosa is missing or the tracker found nothing steady; the window then
+    # falls back to the dependency-free note-onset estimate.
+    audio_tempo_bpm: float | None = None
+    # Beat positions in the *full-song* timeline, so a range analysis lines up
+    # with the waveform. Empty when tracking failed or was not confident.
+    beat_times: tuple[float, ...] = ()
     # The temporary work directory holding midi_path, heatmap_path, and the
     # rendered preview WAV. The window owns its lifetime and removes it once a
     # newer analysis supersedes this one (or on close), so /tmp does not grow
@@ -138,6 +147,18 @@ def run_analysis_request(request: AnalysisRequest, work_dir: Path, *, progress=l
         write_midi(midi_path, midi_notes)
     notes = midi_notes_to_gui(midi_notes, source=request.backend)
 
+    # Beat tracking runs on the same audio the analysis used, so a range
+    # analysis measures the range rather than the whole song. It is advisory:
+    # any failure leaves the note-onset estimate in charge (issue #14).
+    progress("Estimating tempo…")
+    beat_estimate = estimate_beats_from_audio(analysis_audio_path)
+    audio_tempo_bpm = beat_estimate.tempo_bpm if beat_estimate.is_confident else None
+    beat_times: tuple[float, ...] = ()
+    if beat_estimate.is_confident:
+        # Beat times come back in the analysed audio's own timeline; shift them
+        # onto the full-song timeline the GUI draws against.
+        beat_times = tuple(time + offset_seconds for time in beat_estimate.beat_times)
+
     rendered_midi_wav: Path | None = None
     render_error: str | None = None
     if request.render_midi:
@@ -160,6 +181,8 @@ def run_analysis_request(request: AnalysisRequest, work_dir: Path, *, progress=l
         analysis_start_seconds=offset_seconds if request.range_duration_seconds is not None else 0.0,
         analysis_duration_seconds=request.range_duration_seconds,
         midi_preview_offset_seconds=offset_seconds if request.range_duration_seconds is not None else 0.0,
+        audio_tempo_bpm=audio_tempo_bpm,
+        beat_times=beat_times,
         work_dir=work_dir,
     )
 

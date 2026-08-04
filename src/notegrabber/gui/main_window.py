@@ -96,6 +96,10 @@ class MainWindow(QMainWindow):
         # The pitch the buffer was copied from, used when a paste has no anchor
         # pitch to transpose onto (pointer outside the roll).
         self._clipboard_root_pitch: int = 60
+        # Audio-derived tempo and beat positions from the last analysis, set by
+        # the worker where librosa can run off the UI thread (issue #14).
+        self._audio_tempo_bpm: float | None = None
+        self._beat_times: tuple[float, ...] = ()
         self.playback_mode = "stopped"
         # The last mode actually played, kept across pause/stop so Space can
         # resume what was playing rather than guessing (issue #64).
@@ -653,6 +657,10 @@ class MainWindow(QMainWindow):
         self.state.analysis_start_seconds = result.analysis_start_seconds
         self.state.analysis_duration_seconds = result.analysis_duration_seconds
         self.state.midi_preview_offset_seconds = result.midi_preview_offset_seconds
+        # Audio-derived tempo/beats from this analysis (issue #14). Cleared and
+        # replaced on every analysis so a stale tempo never outlives its audio.
+        self._audio_tempo_bpm = result.audio_tempo_bpm
+        self._beat_times = result.beat_times
         self._select_note(None)
         self._set_display_notes(result.notes)
         if result.rendered_midi_wav is not None:
@@ -1084,7 +1092,11 @@ class MainWindow(QMainWindow):
                 is_selection=True,
             )
         else:
-            stats = compute_stats(notes, duration_seconds=self.waveform.duration_seconds())
+            stats = compute_stats(
+                notes,
+                duration_seconds=self.waveform.duration_seconds(),
+                audio_tempo_bpm=self._audio_tempo_bpm,
+            )
         text = stats.strip_text()
         if self._current_file_name:
             text = f"{self._current_file_name}  ·  {text}"

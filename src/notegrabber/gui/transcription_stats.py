@@ -143,6 +143,7 @@ def compute_stats(
     start_seconds: float = 0.0,
     end_seconds: float | None = None,
     is_selection: bool = False,
+    audio_tempo_bpm: float | None = None,
 ) -> TranscriptionStats:
     """Compute the stats bundle, optionally scoped to a selected time range.
 
@@ -150,19 +151,28 @@ def compute_stats(
     are restricted to that window for the count, tempo, and key, and
     ``duration_seconds`` should be the window length. Otherwise stats cover the
     whole note list.
+
+    ``audio_tempo_bpm`` is an audio-derived tempo from librosa beat tracking
+    (issue #14). It is preferred when present, because it reads the audio's own
+    onset envelope rather than the transcribed notes and so survives sparse or
+    syncopated material.  It is deliberately *not* used for a selection: it
+    describes the analysed audio, not an arbitrary window the user dragged
+    afterwards, so a scoped view falls back to the note-onset estimate.
     """
 
     if is_selection:
         scoped = _notes_in_window(notes, start_seconds, end_seconds)
         key = detect_key_from_notes(scoped, start_seconds=start_seconds, end_seconds=end_seconds)
+        tempo = estimate_tempo_bpm(scoped)
     else:
         scoped = list(notes)
         key = detect_key_from_notes(scoped)
+        tempo = audio_tempo_bpm if audio_tempo_bpm else estimate_tempo_bpm(scoped)
 
     return TranscriptionStats(
         note_count=len(scoped),
         duration_seconds=max(0.0, float(duration_seconds)),
-        tempo_bpm=estimate_tempo_bpm(scoped),
+        tempo_bpm=tempo,
         key=key,
         is_selection=is_selection,
     )
