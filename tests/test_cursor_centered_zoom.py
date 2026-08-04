@@ -203,11 +203,16 @@ def test_zoom_clamps_still_apply_and_scroll_stays_valid():
         assert roll.horizontal_zoom == pytest.approx(1.0)
         assert bar.value() >= 0
 
-        for _ in range(40):
+        # Enough wheel clicks to reach the upper clamp, whatever it is set to
+        # (raised to 256 for Fit in issue #10; 1.2**x, so ~31 clicks to 256).
+        for _ in range(80):
             roll.zoom_by_wheel_delta(120, anchor_x=roll._horizontal_scroll_offset() + 500.0)
             app.processEvents()
 
-        assert roll.horizontal_zoom == pytest.approx(32.0)
+        ceiling = roll.horizontal_zoom
+        roll.zoom_by_wheel_delta(120, anchor_x=roll._horizontal_scroll_offset() + 500.0)
+        app.processEvents()
+        assert roll.horizontal_zoom == pytest.approx(ceiling), "zoom must stop at the clamp"
         assert bar.value() >= 0
     finally:
         window.close()

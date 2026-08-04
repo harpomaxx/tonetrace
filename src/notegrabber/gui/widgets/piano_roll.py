@@ -31,6 +31,10 @@ class PianoRollWidget(QWidget):
     seek_requested = Signal(float)
     note_selected = Signal(int, float)
     note_edited = Signal(int, float, float, int, int, bool)
+    # Batch edit for a multi-selection drag (issue #36): a list of
+    # (index, start_seconds, duration_seconds, pitch, velocity) plus a committed
+    # flag. One signal per move keeps the group a single undo step.
+    notes_edited = Signal(list, bool)
     # (start_seconds, duration_seconds, pitch, velocity) for a note created by
     # double-clicking empty space.
     note_created = Signal(float, float, int, int)
@@ -86,6 +90,10 @@ class PianoRollWidget(QWidget):
         self.drag_start_x = 0.0
         self.drag_start_y = 0.0
         self.drag_original_note: GuiMidiNote | None = None
+        # Originals of every note in a group drag, by index (issue #36). Empty
+        # for a single-note drag. Snapshotted at press so each move recomputes
+        # from the start rather than compounding deltas.
+        self.drag_group_originals: dict[int, GuiMidiNote] = {}
         self.drag_has_moved = False
         self.drag_threshold_pixels = 3.0
         self.min_note_duration_seconds = 0.001
@@ -200,7 +208,10 @@ class PianoRollWidget(QWidget):
     def set_horizontal_zoom(self, zoom: float) -> None:
         """Set horizontal zoom, where 1.0 fits the whole analysis in the viewport."""
 
-        self.horizontal_zoom = max(1.0, min(32.0, float(zoom)))
+        # Cap raised from 32 for Fit (issue #10): fitting a couple of seconds
+        # inside a multi-minute song needs far more than 32x, and the canvas
+        # stays viewport-bounded at any zoom, so a deeper cap costs nothing.
+        self.horizontal_zoom = max(1.0, min(256.0, float(zoom)))
         self.seconds_per_pixel = max(0.0005, self.fit_seconds_per_pixel / self.horizontal_zoom)
         self._update_canvas_size()
         self.updateGeometry()
@@ -509,6 +520,17 @@ class PianoRollWidget(QWidget):
                     # (so a drag can act on it); otherwise the click replaces it.
                     if note_index not in self.selected_indices:
                         self.set_selected_note_index(note_index)
+                    # Snapshot the whole group up front so every move recomputes
+                    # from the originals instead of compounding its own deltas.
+                    self.drag_group_originals = (
+                        {
+                            index: self.notes[index]
+                            for index in self.selected_indices
+                            if 0 <= index < len(self.notes)
+                        }
+                        if len(self.selected_indices) > 1
+                        else {}
+                    )
                     note = self.notes[note_index]
                     self.note_selected.emit(note_index, note.start_seconds)
                     self.seek_requested.emit(note.start_seconds)
@@ -574,16 +596,19 @@ class PianoRollWidget(QWidget):
                     super().mouseMoveEvent(event)
                     return
                 self.drag_has_moved = True
-            edited = self._edited_drag_note(x, y)
-            if edited is not None:
-                self.note_edited.emit(
-                    self.drag_note_index,
-                    edited.start_seconds,
-                    edited.duration_seconds,
-                    edited.pitch,
-                    edited.velocity,
-                    False,
-                )
+            if self.drag_group_originals:
+                self._emit_group_edit(x, y, committed=False)
+            else:
+                edited = self._edited_drag_note(x, y)
+                if edited is not None:
+                    self.note_edited.emit(
+                        self.drag_note_index,
+                        edited.start_seconds,
+                        edited.duration_seconds,
+                        edited.pitch,
+                        edited.velocity,
+                        False,
+                    )
         elif self.rubber_start is not None:
             if not self.drag_has_moved:
                 distance = math.hypot(x - self.drag_start_x, y - self.drag_start_y)
@@ -621,16 +646,21 @@ class PianoRollWidget(QWidget):
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt API
         if self.drag_mode is not None and self.drag_note_index is not None and self.drag_original_note is not None and self.drag_has_moved:
-            edited = self._edited_drag_note(float(event.position().x()), float(event.position().y()))
-            if edited is not None:
-                self.note_edited.emit(
-                    self.drag_note_index,
-                    edited.start_seconds,
-                    edited.duration_seconds,
-                    edited.pitch,
-                    edited.velocity,
-                    True,
-                )
+            x = float(event.position().x())
+            y = float(event.position().y())
+            if self.drag_group_originals:
+                self._emit_group_edit(x, y, committed=True)
+            else:
+                edited = self._edited_drag_note(x, y)
+                if edited is not None:
+                    self.note_edited.emit(
+                        self.drag_note_index,
+                        edited.start_seconds,
+                        edited.duration_seconds,
+                        edited.pitch,
+                        edited.velocity,
+                        True,
+                    )
         elif self.rubber_start is not None:
             if self.drag_has_moved:
                 # The band already applied the selection on every move; just
@@ -649,6 +679,7 @@ class PianoRollWidget(QWidget):
         self.drag_mode = None
         self.drag_note_index = None
         self.drag_original_note = None
+        self.drag_group_originals = {}
         self.drag_has_moved = False
         self._update_hover_state(float(event.position().x()), float(event.position().y()))
         super().mouseReleaseEvent(event)
@@ -1285,6 +1316,187 @@ class PianoRollWidget(QWidget):
                 pitch=note.pitch if pitch is None else pitch,
                 start_seconds=max(0.0, note.start_seconds + delta_seconds),
             )
+        return None
+
+    # Fraction of the viewport left as breathing room around a fitted span, so
+    # the fitted notes do not sit flush against the edges.
+    FIT_MARGIN = 0.08
+
+    def fit_to_span(
+        self,
+        start_seconds: float,
+        end_seconds: float,
+        *,
+        pitch_range: tuple[int, int] | None = None,
+    ) -> None:
+        """Zoom and scroll so a time span (and optionally a pitch span) fills the view.
+
+        Fitting notes means fitting both axes: zooming only in time leaves a
+        selection as a thin horizontal sliver. ``pitch_range`` of None leaves the
+        vertical zoom alone, which is what a time-only fit (analysis range, whole
+        song) wants.
+        """
+
+        if self.heatmap is None:
+            return
+        span = max(1e-6, float(end_seconds) - float(start_seconds))
+        span *= 1.0 + self.FIT_MARGIN * 2
+
+        # Horizontal: zoom is relative to the whole-song fit, so the ratio of the
+        # full timeline to the target span is exactly the zoom needed.
+        viewport_width = max(1, self._viewport_width() - self.keyboard_width)
+        target_seconds_per_pixel = span / viewport_width
+        self.set_horizontal_zoom(self.fit_seconds_per_pixel / max(1e-9, target_seconds_per_pixel))
+
+        if pitch_range is not None:
+            low, high = pitch_range
+            rows = max(1, abs(int(high) - int(low)) + 1)
+            rows = int(math.ceil(rows * (1.0 + self.FIT_MARGIN * 2)))
+            target_height = max(1, self._viewport_height() // rows)
+            self.set_vertical_zoom(target_height / max(1, self.base_note_height))
+
+        self._scroll_to_span(start_seconds, end_seconds, pitch_range)
+        self.zoom_changed.emit(self.horizontal_zoom)
+        self.vertical_zoom_changed.emit(self.vertical_zoom)
+
+    def _scroll_to_span(
+        self,
+        start_seconds: float,
+        end_seconds: float,
+        pitch_range: tuple[int, int] | None,
+    ) -> None:
+        """Centre the given span in the viewport after a zoom change."""
+
+        bar = self._horizontal_scroll_bar()
+        if bar is not None:
+            centre_x = (self.x_for_seconds(start_seconds) + self.x_for_seconds(end_seconds)) / 2.0
+            bar.setValue(max(0, round(centre_x - self._viewport_width() / 2.0)))
+        vertical = self._vertical_scroll_bar()
+        if vertical is not None and pitch_range is not None:
+            tops = [
+                self._y_for_pitch(pitch)
+                for pitch in pitch_range
+                if self._y_for_pitch(pitch) is not None
+            ]
+            if tops:
+                centre_y = (min(tops) + max(tops) + self.note_height) / 2.0
+                vertical.setValue(max(0, round(centre_y - self._viewport_height() / 2.0)))
+
+    def _y_for_pitch(self, pitch: int) -> float | None:
+        """Top y of the row a pitch is drawn on, or None if it has no row."""
+
+        row = self._pitch_to_row.get(int(pitch))
+        if row is None or self.heatmap is None:
+            return None
+        return (self.heatmap.note_count - 1 - row) * self.note_height
+
+    def _drawable_pitch_range(self) -> tuple[int, int]:
+        """Lowest and highest pitch the heatmap has a row for.
+
+        Notes outside this range have no rectangle in ``_note_rect`` and would
+        disappear from the roll while still living in the note list.
+        """
+
+        if self.heatmap is None or not self.heatmap.midi_notes:
+            return 0, 127
+        return int(min(self.heatmap.midi_notes)), int(max(self.heatmap.midi_notes))
+
+    def _emit_group_edit(self, x: float, y: float, *, committed: bool) -> None:
+        """Emit a batch edit for the current group drag, previewing it live."""
+
+        edits = self._edited_drag_group(x, y)
+        if not edits:
+            return
+        # Emit *before* previewing. self.notes is the same list object as the
+        # model's note list, so preview_note_edit would mutate it in place and
+        # the handler's first-tick snapshot would capture an already-dragged
+        # state -- undo would then only rewind to mid-drag.
+        self.notes_edited.emit(
+            [
+                (index, note.start_seconds, note.duration_seconds, note.pitch, note.velocity)
+                for index, note in edits
+            ],
+            committed,
+        )
+        if not committed:
+            # Live feedback without the full set_data path; the committed edit
+            # goes through main_window like any other.
+            for index, note in edits:
+                self.preview_note_edit(index, note)
+
+    def _edited_drag_group(self, x: float, y: float) -> list[tuple[int, GuiMidiNote]] | None:
+        """Apply the current drag to every note in a group drag (issue #36).
+
+        The delta is computed once from the dragged note, then clamped by the
+        *most-constrained* member before being applied to all of them, so the
+        group keeps its relative spacing when it meets a boundary instead of
+        collapsing as notes clamp independently.
+        """
+
+        if self.drag_mode is None or not self.drag_group_originals:
+            return None
+        anchor = self.drag_original_note
+        if anchor is None:
+            return None
+        originals = self.drag_group_originals
+        delta_seconds = (x - self.drag_start_x) * self.seconds_per_pixel
+
+        if self.drag_mode == "move":
+            # Time: no note may start before 0.
+            earliest = min(note.start_seconds for note in originals.values())
+            delta_seconds = max(delta_seconds, -earliest)
+            # Pitch: shift by whole rows, bounded so no note leaves 0..127.
+            delta_pitch = 0
+            pitch = self._pitch_at_y(y)
+            if pitch is not None:
+                delta_pitch = pitch - anchor.pitch
+                lowest = min(note.pitch for note in originals.values())
+                highest = max(note.pitch for note in originals.values())
+                # Bound by the rows the heatmap actually draws, not by 0..127: a
+                # note on a pitch with no row has no rectangle, so it would stay
+                # in the data but vanish from the roll.
+                floor_pitch, ceiling_pitch = self._drawable_pitch_range()
+                delta_pitch = max(delta_pitch, floor_pitch - lowest)
+                delta_pitch = min(delta_pitch, ceiling_pitch - highest)
+            return [
+                (
+                    index,
+                    replace(
+                        note,
+                        pitch=note.pitch + delta_pitch,
+                        start_seconds=max(0.0, note.start_seconds + delta_seconds),
+                    ),
+                )
+                for index, note in originals.items()
+            ]
+
+        if self.drag_mode == "resize_end":
+            # Uniform edge delta, bounded so the shortest note keeps its minimum.
+            shortest = min(note.duration_seconds for note in originals.values())
+            delta_seconds = max(delta_seconds, self.min_note_duration_seconds - shortest)
+            return [
+                (index, replace(note, duration_seconds=note.duration_seconds + delta_seconds))
+                for index, note in originals.items()
+            ]
+
+        if self.drag_mode == "resize_start":
+            # Moving the left edge shortens from the front: bounded by the
+            # earliest start (>= 0) and by the shortest note's minimum length.
+            earliest = min(note.start_seconds for note in originals.values())
+            shortest = min(note.duration_seconds for note in originals.values())
+            delta_seconds = max(delta_seconds, -earliest)
+            delta_seconds = min(delta_seconds, shortest - self.min_note_duration_seconds)
+            return [
+                (
+                    index,
+                    replace(
+                        note,
+                        start_seconds=note.start_seconds + delta_seconds,
+                        duration_seconds=note.duration_seconds - delta_seconds,
+                    ),
+                )
+                for index, note in originals.items()
+            ]
         return None
 
     def _pitch_at_y(self, y: float) -> int | None:
