@@ -405,6 +405,137 @@ def test_nudge_reports_itself_in_the_status_line():
         app.processEvents()
 
 
+# --- real key delivery ------------------------------------------------------
+#
+# The tests above call the handlers directly, which does not prove the window
+# ever *receives* the key. The piano roll lives in a QScrollArea that defaults
+# to StrongFocus and consumes the arrows to scroll, so nudging silently did
+# nothing in the real app until the roll took focus and offered keys to the
+# window first. These drive QTest.keyClick at the focused widget instead.
+
+
+def _focused_roll(window):
+    from PySide6.QtWidgets import QApplication
+
+    roll = window.piano_roll
+    roll.setFocus()
+    QApplication.processEvents()
+    return roll
+
+
+def test_arrow_key_reaches_the_nudge_handler_through_the_scroll_area():
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    app, window = _window()
+    try:
+        roll = _focused_roll(window)
+        roll.set_selected_indices({0})
+        app.processEvents()
+        scroll = roll._horizontal_scroll_bar()
+        before_scroll = scroll.value()
+
+        QTest.keyClick(roll, Qt.Key.Key_Right)
+        app.processEvents()
+
+        assert _starts(window)[0] == pytest.approx(2.05), "the key must nudge, not scroll"
+        assert scroll.value() == before_scroll, "the scroll area must not also scroll"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_arrow_keys_still_scroll_when_nothing_is_selected():
+    """Nudging must not cost normal arrow-key navigation of the roll."""
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    app, window = _window()
+    try:
+        roll = _focused_roll(window)
+        roll.zoom_to(8.0)  # zoom in so there is somewhere to scroll
+        roll.set_selected_indices(set())
+        app.processEvents()
+        scroll = roll._horizontal_scroll_bar()
+        before = scroll.value()
+
+        for _ in range(5):
+            QTest.keyClick(roll, Qt.Key.Key_Right)
+        app.processEvents()
+
+        assert scroll.value() != before
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_the_roll_accepts_focus_so_keys_do_not_go_to_the_scroll_area():
+    """The regression that shipped: the roll had NoFocus.
+
+    A QScrollArea defaults to StrongFocus, so it took focus on click and
+    consumed the arrows to scroll -- the window's key handler never ran and
+    nudging silently did nothing in the real app.
+    """
+
+    from PySide6.QtCore import Qt
+
+    app, window = _window()
+    try:
+        roll = window.piano_roll
+        assert roll.focusPolicy() != Qt.FocusPolicy.NoFocus
+
+        # Focus must land on the roll rather than its scroll area.
+        roll.setFocus()
+        app.processEvents()
+        assert window.focusWidget() is roll
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_key_delivered_to_the_focused_widget_nudges():
+    """End to end: send the key where Qt would send it, not straight to the roll."""
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    app, window = _window()
+    try:
+        roll = _focused_roll(window)
+        roll.set_selected_indices({0})
+        app.processEvents()
+
+        target = window.focusWidget()
+        assert target is not None
+        QTest.keyClick(target, Qt.Key.Key_Right)
+        app.processEvents()
+
+        assert _starts(window)[0] == pytest.approx(2.05)
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_delete_key_reaches_the_handler_from_the_roll():
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    app, window = _window()
+    try:
+        roll = _focused_roll(window)
+        roll.set_selected_indices({0})
+        app.processEvents()
+
+        QTest.keyClick(roll, Qt.Key.Key_Delete)
+        app.processEvents()
+
+        assert len(window.state.current_notes) == 1
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_delete_key_still_deletes():
     from PySide6.QtCore import Qt
 

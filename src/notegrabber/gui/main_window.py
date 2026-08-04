@@ -705,14 +705,24 @@ class MainWindow(QMainWindow):
     NUDGE_VELOCITY_LARGE = 10
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt API
-        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-            self._delete_selected_note()
-            event.accept()
-            return
-        if self._nudge_from_key(event):
+        if self.handle_piano_roll_key(event):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def handle_piano_roll_key(self, event) -> bool:
+        """Handle an editing key, returning True when it was consumed.
+
+        Called both from this window and from the piano roll itself: the roll
+        sits in a QScrollArea that would otherwise swallow the arrow keys to
+        scroll, so it offers keys here first and falls back to scrolling for
+        anything not claimed (issue #65).
+        """
+
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self._delete_selected_note()
+            return True
+        return self._nudge_from_key(event)
 
     def _nudge_from_key(self, event) -> bool:
         """Nudge the selection with the arrow keys or +/- (issue #65).

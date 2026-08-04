@@ -105,6 +105,10 @@ class PianoRollWidget(QWidget):
         self.minimum_canvas_width = 760
         self.minimum_canvas_height = 420
         self.setMouseTracking(True)
+        # Take focus on click so arrow keys reach the window's nudge handler
+        # (issue #65). Without this the enclosing QScrollArea keeps focus and
+        # consumes the arrows to scroll, so nudging never fires.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setToolTip("Click notes to select. Drag note bodies to move time/pitch; drag edges to resize. Double-click empty space to add a note. Ctrl+wheel zooms time; Shift+wheel changes note height.")
         self.setMinimumSize(self.minimum_canvas_width, self.minimum_canvas_height)
 
@@ -693,6 +697,21 @@ class PianoRollWidget(QWidget):
         self.rubber_current = None
         self.rubber_base_selection = set()
         self.update()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt API
+        """Offer editing keys to the window before the scroll area sees them.
+
+        The roll lives in a QScrollArea, which would otherwise consume the
+        arrows to scroll. Anything the window does not claim falls through, so
+        arrow-scrolling still works when no notes are selected (issue #65).
+        """
+
+        window = self.window()
+        handler = getattr(window, "handle_piano_roll_key", None)
+        if handler is not None and handler(event):
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def leaveEvent(self, event) -> None:  # noqa: N802 - Qt API
         self.hover_note_index = None
