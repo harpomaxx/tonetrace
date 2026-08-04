@@ -442,6 +442,7 @@ class MainWindow(QMainWindow):
         self.piano_roll.note_edited.connect(self._edit_note_from_piano_roll)
         self.piano_roll.note_created.connect(self._create_note_from_piano_roll)
         self.piano_roll.selection_changed.connect(self._on_selection_changed)
+        self.piano_roll.notes_edited.connect(self._edit_notes_from_piano_roll)
         self.sequence.seek_requested.connect(self._seek_seconds)
         self.apply_note_button.clicked.connect(self._apply_selected_note_edit)
 
@@ -1177,6 +1178,59 @@ class MainWindow(QMainWindow):
             velocity=velocity,
             status_prefix="Moved/resized selected note",
             update_preview=committed,
+        )
+
+    def _edit_notes_from_piano_roll(self, edits: list, committed: bool = True) -> None:
+        """Apply a group drag as one undoable edit (issue #36).
+
+        Mirrors _edit_note's snapshot discipline: the pre-gesture list is
+        recorded once on the first tick, so a multi-tick group drag collapses
+        into a single undo step however many notes it moves.
+        """
+
+        if self.state.heatmap is None or not edits:
+            return
+        notes = self.state.current_notes
+        applicable = [edit for edit in edits if 0 <= int(edit[0]) < len(notes)]
+        if not applicable:
+            return
+        if self._pre_edit_snapshot is None:
+            self._pre_edit_snapshot = list(self.state.current_notes)
+            self.state.tuned_notes = list(self.state.current_notes)
+        working = self.state.tuned_notes
+        touched: set[int] = set()
+        for index, start_seconds, duration_seconds, pitch, velocity in applicable:
+            index = int(index)
+            # replace() keeps pitch_bends, so bend curves survive a group edit.
+            working[index] = normalized_gui_note(
+                replace(
+                    working[index],
+                    start_seconds=float(start_seconds),
+                    duration_seconds=float(duration_seconds),
+                    pitch=int(pitch),
+                    velocity=int(velocity),
+                )
+            )
+            touched.add(index)
+        self.selected_indices = touched
+        self.selected_note_index = next(iter(touched)) if len(touched) == 1 else None
+        if not committed:
+            # The widget already previewed each note's rect during the drag, so
+            # skip the full set_data path and just report progress.
+            self._set_status(
+                f"Editing {len(touched)} notes… release to update MIDI preview. "
+                f"Export writes {len(working)} edited notes."
+            )
+            return
+        if self._pre_edit_snapshot is not None:
+            self.edit_history.record(self._pre_edit_snapshot)
+            self._pre_edit_snapshot = None
+        self._set_display_notes(working)
+        self.piano_roll.set_selected_indices(touched)
+        preview_status = self._refresh_midi_preview(working)
+        self._set_status(
+            f"Moved/resized {len(touched)} notes. "
+            f"Export writes {len(working)} edited notes.{preview_status}"
         )
 
     def _edit_note(
