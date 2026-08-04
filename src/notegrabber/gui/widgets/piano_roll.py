@@ -1189,6 +1189,16 @@ class PianoRollWidget(QWidget):
             else:
                 painter.setPen(QPen(border, 1))
                 painter.setBrush(fill)
+            if note.muted:
+                # Muted notes stay visible and selectable but read as "off":
+                # hollow, dimmed, and drawn with a dashed outline (issue #66).
+                outline = QColor(painter.pen().color())
+                outline.setAlpha(150)
+                pen = QPen(outline, 2 if is_selected else 1, Qt.PenStyle.DashLine)
+                painter.setPen(pen)
+                muted_fill = QColor(painter.brush().color())
+                muted_fill.setAlpha(45)
+                painter.setBrush(muted_fill)
             painter.drawRect(rect)
             if is_selected or is_hovered:
                 self._draw_note_handles(painter, rect, active=is_selected)

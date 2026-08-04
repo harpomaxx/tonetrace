@@ -87,7 +87,12 @@ class SequenceWidget(QWidget):
             new_starts.append(start)
             duration = max(note.end_seconds for note in group) - start
             ordered = sorted(group, key=lambda note: note.pitch)
-            pitches = " ".join(note_name(note.pitch) for note in ordered)
+            # Rows group notes by onset, so a row can mix muted and audible
+            # notes; mark them per note rather than greying the whole row.
+            pitches = " ".join(
+                f"({note_name(note.pitch)})" if note.muted else note_name(note.pitch)
+                for note in ordered
+            )
             velocities = ", ".join(str(note.velocity) for note in ordered)
             new_values.append((f"{start:.3f}", pitches, f"{duration:.3f}", velocities))
 

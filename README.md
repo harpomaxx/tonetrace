@@ -148,7 +148,15 @@ section (handy for long files), pick a backend, and click **Analyze**. Then:
 - Read the stats strip under the waveform (note count, duration, estimated
   tempo, and detected key), which updates as you edit.
 - Select, drag, resize, retune, and delete notes; edits re-render the MIDI
-  preview.
+  preview. Select several at once (shift-click, or drag a rubber band over
+  empty space) and move, nudge, copy, mute or delete them together — every
+  edit is one undo step. Double-click empty space to add a note, and click any
+  note to hear it on its own.
+- **Keyboard**: `Space` play/pause, `1`/`2`/`3` to switch Audio/MIDI/Both,
+  arrows to nudge the selection, `M` to mute non-destructively, `Ctrl+C`/`V` to
+  copy and paste a phrase (paste lands at the mouse pointer, transposed to the
+  row under it). See the [shortcuts cheatsheet](docs/shortcuts.md) for the full
+  list.
 - **Export** the edited notes as a Standard MIDI File, or as rendered audio
   (WAV / MP3 / FLAC / OGG). Audio is synthesized with the built-in synth and
   encoded via `soundfile`; MP3/FLAC/OGG need a libsndfile build with that codec
