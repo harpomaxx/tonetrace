@@ -97,6 +97,9 @@ class MainWindow(QMainWindow):
         # pitch to transpose onto (pointer outside the roll).
         self._clipboard_root_pitch: int = 60
         self.playback_mode = "stopped"
+        # The last mode actually played, kept across pause/stop so Space can
+        # resume what was playing rather than guessing (issue #64).
+        self.last_playback_mode = "both"
         self.playback_timer = QTimer(self)
         self.playback_timer.setInterval(16)
         self.playback_clock = QElapsedTimer()
@@ -214,6 +217,19 @@ class MainWindow(QMainWindow):
         paste.activated.connect(self._paste_notes)
         duplicate = QShortcut(QKeySequence("Ctrl+D"), self)
         duplicate.activated.connect(self._duplicate_selected_notes)
+        # Transport shortcuts (issue #64). Guarded so they never fire while a
+        # text/number field has focus, where Space and digits must type.
+        transport = (
+            ("Space", self._toggle_playback),
+            ("1", lambda: self._play_mode("original")),
+            ("2", lambda: self._play_mode("midi")),
+            ("3", lambda: self._play_mode("both")),
+            ("0", self._stop_playback),
+            ("Esc", self._stop_playback),
+        )
+        for sequence, handler in transport:
+            shortcut = QShortcut(QKeySequence(sequence), self)
+            shortcut.activated.connect(self._guarded_transport(handler))
 
     def load_audio(self, path: Path) -> None:
         """Load an audio file into the GUI without analyzing it yet."""
@@ -1756,6 +1772,7 @@ class MainWindow(QMainWindow):
         self.original_player.setPosition(self._original_position_from_display_seconds(display_seconds))
         self.midi_player.setPosition(self._midi_position_from_display_seconds(display_seconds))
         self.playback_mode = "both"
+        self.last_playback_mode = "both"
         self._start_playback_clock(display_seconds)
         self._set_playhead(display_seconds)
         self.playback_timer.start()
@@ -1771,6 +1788,7 @@ class MainWindow(QMainWindow):
         self.midi_player.pause()
         self.original_player.setPosition(self._original_position_from_display_seconds(display_seconds))
         self.playback_mode = "original"
+        self.last_playback_mode = "original"
         self._start_playback_clock(display_seconds)
         self._set_playhead(display_seconds)
         self.playback_timer.start()
@@ -1786,6 +1804,7 @@ class MainWindow(QMainWindow):
         self.original_player.setPosition(self._original_position_from_display_seconds(display_seconds))
         self.midi_player.setPosition(self._midi_position_from_display_seconds(display_seconds))
         self.playback_mode = "midi"
+        self.last_playback_mode = "midi"
         self._start_playback_clock(display_seconds)
         self._set_playhead(display_seconds)
         self.playback_timer.start()
@@ -1886,6 +1905,83 @@ class MainWindow(QMainWindow):
         if duration_ms > 0 and position_ms >= max(0, duration_ms - end_tolerance_ms):
             return 0
         return max(0, position_ms)
+
+    def _guarded_transport(self, handler):
+        """Wrap a transport handler so it is skipped while a field has focus.
+
+        Space and the digits are transport shortcuts, but they are also ordinary
+        input in a spin box or combo: typing a velocity of 100 must not start
+        playback three times (issue #64).
+        """
+
+        def run() -> None:
+            if self._text_entry_has_focus():
+                return
+            handler()
+
+        return run
+
+    def _text_entry_has_focus(self) -> bool:
+        """True when focus is in a widget where digits/space are real input."""
+
+        from PySide6.QtWidgets import QAbstractSpinBox, QComboBox, QLineEdit
+
+        widget = QApplication.focusWidget()
+        if widget is None:
+            return False
+        if isinstance(widget, (QAbstractSpinBox, QComboBox, QLineEdit)):
+            return True
+        # A spin box's internal QLineEdit is the actual focus widget on most
+        # styles, so check the parent chain too.
+        parent = widget.parentWidget()
+        return isinstance(parent, (QAbstractSpinBox, QComboBox))
+
+    def _toggle_playback(self) -> None:
+        """Space: pause if playing, otherwise resume the last mode (issue #64).
+
+        Resuming reuses the ordinary play path, which starts from the current
+        playhead, so pause/resume keeps its position.
+        """
+
+        if self.playback_mode in {"both", "original", "midi"}:
+            self._pause_playback()
+            return
+        self._play_mode(self.last_playback_mode)
+
+    def _play_mode(self, mode: str) -> bool:
+        """Start one playback mode by name, falling back when it is unavailable.
+
+        Returns True when something started. A transcription without a rendered
+        preview cannot play MIDI or both, so those fall back to the original
+        rather than doing nothing silently.
+        """
+
+        has_audio = self.state.audio_path is not None
+        has_midi = self.state.rendered_midi_wav is not None
+        fell_back = False
+        if mode in {"midi", "both"} and not has_midi:
+            fell_back = True
+            mode = "original"
+        if mode in {"original", "both"} and not has_audio:
+            self._set_status("Load an audio file to play.")
+            return False
+        if mode == "midi" and not has_midi:
+            self._set_status("No rendered MIDI preview to play yet.")
+            return False
+
+        if mode == "both":
+            self._play_both()
+        elif mode == "original":
+            self._play_original()
+        elif mode == "midi":
+            self._play_midi()
+        else:
+            return False
+        if fell_back:
+            # Set after playing: each _play_* writes its own status, which would
+            # otherwise bury the explanation for the substitution.
+            self._set_status("No rendered MIDI preview yet: playing the original instead.")
+        return True
 
     def _pause_playback(self) -> None:
         display_seconds = self._current_display_seconds()
