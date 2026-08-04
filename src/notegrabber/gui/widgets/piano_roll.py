@@ -405,6 +405,29 @@ class PianoRollWidget(QWidget):
 
         return max(0.0, (float(x) - self.keyboard_width) * self.seconds_per_pixel)
 
+    def cursor_target(self) -> tuple[float, int] | None:
+        """Return (seconds, pitch) under the mouse, or None if it is not over the grid.
+
+        Used to paste a copied pattern where the pointer is (issue #63). Returns
+        None when the cursor is outside the widget, over the pinned keyboard
+        strip, or off the pitch grid, so callers can fall back to the playhead.
+        """
+
+        from PySide6.QtGui import QCursor
+
+        if self.heatmap is None:
+            return None
+        position = self.mapFromGlobal(QCursor.pos())
+        x, y = float(position.x()), float(position.y())
+        if not self.rect().contains(position):
+            return None
+        if x < self.keyboard_width:
+            return None
+        pitch = self._pitch_at_y(y)
+        if pitch is None:
+            return None
+        return self.seconds_at_x(x), int(pitch)
+
     def vertical_zoom_by_wheel_delta(self, delta_y: int, anchor_y: float | None = None) -> None:
         """Zoom note height from a wheel delta; positive delta makes rows taller.
 

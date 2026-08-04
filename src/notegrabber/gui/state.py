@@ -35,6 +35,7 @@ __all__ = [
     "GuiMidiNote",
     "ProjectState",
     "add_gui_note",
+    "add_gui_notes",
     "delete_gui_note",
     "delete_gui_notes",
     "gui_note_to_midi",
@@ -195,6 +196,48 @@ def add_gui_note(notes: list[GuiMidiNote], note: GuiMidiNote) -> tuple[list[GuiM
     updated = list(notes)
     updated.insert(index, note)
     return updated, index
+
+
+def add_gui_notes(
+    notes: list[GuiMidiNote],
+    new_notes: list[GuiMidiNote],
+) -> tuple[list[GuiMidiNote], set[int]]:
+    """Return a copy of notes with ``new_notes`` inserted, plus their indices.
+
+    Inserting one at a time with ``add_gui_note`` would work but renumber the
+    earlier insertions as it goes, so the caller could not tell which indices it
+    just added.  This does the whole batch in one pass and reports the final
+    positions, which is what the paste path selects.
+
+    Ordering matches ``add_gui_note``: each new note lands after every
+    earlier-starting note, and ties keep the pasted notes after existing ones.
+    """
+
+    if not new_notes:
+        return list(notes), set()
+
+    # Insert into the existing list rather than sorting the whole thing: a
+    # drag-edit can leave the list out of start-time order, and re-sorting would
+    # silently renumber untouched notes, which edit_history snapshots and the
+    # sequence table address by position.
+    updated = list(notes)
+    inserted: set[int] = set()
+    for note in sorted(new_notes, key=lambda item: item.start_seconds):
+        note = normalized_gui_note(note)
+        index = len(updated)
+        for position, existing in enumerate(updated):
+            # Skip past notes already inserted in this batch so equal start
+            # times keep the pasted notes in their original relative order.
+            if position in inserted:
+                continue
+            if existing.start_seconds > note.start_seconds:
+                index = position
+                break
+        updated.insert(index, note)
+        # Inserting shifts every previously recorded index at or after it.
+        inserted = {position + 1 if position >= index else position for position in inserted}
+        inserted.add(index)
+    return updated, inserted
 
 
 def delete_gui_notes(notes: list[GuiMidiNote], indices: set[int]) -> list[GuiMidiNote]:

@@ -38,7 +38,7 @@ from .edit_history import EditHistory
 from .transcription_stats import compute_stats
 from .midi_preview_worker import MidiPreviewRequest, MidiPreviewResult, render_midi_preview
 from .process_jobs import JobArtifact, JobProgress, ProcessJob
-from .state import GuiMidiNote, ProjectState, add_gui_note, delete_gui_notes, gui_notes_to_midi, normalized_gui_note, retune_notes_from_heatmap
+from .state import GuiMidiNote, ProjectState, add_gui_note, add_gui_notes, delete_gui_notes, gui_notes_to_midi, normalized_gui_note, retune_notes_from_heatmap
 from .theme import THEMES, active_theme, build_stylesheet, polish_button, set_active_theme
 from .widgets.collapsible import CollapsibleSection
 from .widgets.controls import AnalysisControls
@@ -89,6 +89,13 @@ class MainWindow(QMainWindow):
         # Mirrors the piano roll's selection set; selected_note_index stays as
         # the "exactly one note" view of it for the inspector (issue #35).
         self.selected_indices: set[int] = set()
+        # Copied notes, stored relative to the earliest one in *both* time and
+        # pitch, so a paste can re-anchor the whole pattern anywhere in the roll
+        # while keeping its rhythm and its intervals (issue #63).
+        self._clipboard_notes: list[GuiMidiNote] = []
+        # The pitch the buffer was copied from, used when a paste has no anchor
+        # pitch to transpose onto (pointer outside the roll).
+        self._clipboard_root_pitch: int = 60
         self.playback_mode = "stopped"
         self.playback_timer = QTimer(self)
         self.playback_timer.setInterval(16)
@@ -191,6 +198,13 @@ class MainWindow(QMainWindow):
         for sequence in ("Ctrl+Y", "Ctrl+Shift+Z"):
             redo = QShortcut(QKeySequence(sequence), self)
             redo.activated.connect(self._redo_edit)
+        # Copy/paste/duplicate the note selection (issue #63).
+        copy = QShortcut(QKeySequence.StandardKey.Copy, self)  # Ctrl+C
+        copy.activated.connect(self._copy_selected_notes)
+        paste = QShortcut(QKeySequence.StandardKey.Paste, self)  # Ctrl+V
+        paste.activated.connect(self._paste_notes)
+        duplicate = QShortcut(QKeySequence("Ctrl+D"), self)
+        duplicate.activated.connect(self._duplicate_selected_notes)
 
     def load_audio(self, path: Path) -> None:
         """Load an audio file into the GUI without analyzing it yet."""
@@ -957,6 +971,132 @@ class MainWindow(QMainWindow):
         preview_status = self._refresh_midi_preview(self.state.tuned_notes)
         self._set_status(
             f"Added MIDI {created.pitch} at {created.start_seconds:.2f}s. "
+            f"Export writes {len(self.state.tuned_notes)} edited notes.{preview_status}"
+        )
+
+    # Small nudge so a duplicate does not land exactly on top of its source,
+    # where it would be invisible and impossible to grab.
+    DUPLICATE_OFFSET_SECONDS = 0.25
+
+    def _selected_notes(self) -> list[GuiMidiNote]:
+        """The currently selected notes, in start-time order."""
+
+        notes = self.state.current_notes
+        chosen = [notes[index] for index in sorted(self.selected_indices) if 0 <= index < len(notes)]
+        return sorted(chosen, key=lambda note: note.start_seconds)
+
+    def _relative_to_first(self, notes: list[GuiMidiNote]) -> list[GuiMidiNote]:
+        """Rebase notes onto the earliest one, in both time and pitch.
+
+        The result is a pattern rather than a position: note 0 sits at t=0 and
+        pitch offset 0, and the rest carry their gaps and intervals. Anchoring
+        that anywhere reproduces the shape.
+        """
+
+        origin_seconds = notes[0].start_seconds
+        origin_pitch = notes[0].pitch
+        return [
+            replace(
+                note,
+                start_seconds=note.start_seconds - origin_seconds,
+                pitch=note.pitch - origin_pitch,
+            )
+            for note in notes
+        ]
+
+    def _copy_selected_notes(self) -> None:
+        """Copy the selection into the internal buffer (issue #63)."""
+
+        chosen = self._selected_notes()
+        if not chosen:
+            self._set_status("Nothing to copy: select one or more notes first.")
+            return
+        self._clipboard_notes = self._relative_to_first(chosen)
+        self._clipboard_root_pitch = chosen[0].pitch
+        plural = "note" if len(chosen) == 1 else "notes"
+        self._set_status(
+            f"Copied {len(chosen)} {plural}. Ctrl+V pastes at the mouse pointer "
+            "(or the playhead when the pointer is outside the roll)."
+        )
+
+    def _paste_notes(self) -> None:
+        """Paste the buffer at the mouse pointer, else the playhead (issue #63).
+
+        The pointer gives both a time and a pitch, so the pattern can be placed
+        freely and transposes to the row under the cursor. When the pointer is
+        not over the grid there is no pitch to read, so it falls back to the
+        playhead at the pattern's original pitch.
+        """
+
+        if not self._clipboard_notes:
+            self._set_status("Nothing to paste: copy a selection first with Ctrl+C.")
+            return
+        target = self.piano_roll.cursor_target()
+        if target is None:
+            # No pointer over the grid: fall back to the playhead, at the pitch
+            # the pattern was copied from.
+            seconds = max(0.0, float(self.piano_roll.playhead_seconds))
+            pitch = self._clipboard_root_pitch
+        else:
+            seconds, pitch = target
+        self._insert_notes(self._clipboard_notes, at_seconds=seconds, at_pitch=pitch, verb="Pasted")
+
+    def _duplicate_selected_notes(self) -> None:
+        """Copy and paste the selection in one undoable step (issue #63).
+
+        Anchored just after the selection at its own pitch, so a duplicate lands
+        beside its source wherever the pointer and playhead happen to be.
+        """
+
+        chosen = self._selected_notes()
+        if not chosen:
+            self._set_status("Nothing to duplicate: select one or more notes first.")
+            return
+        self._insert_notes(
+            self._relative_to_first(chosen),
+            at_seconds=chosen[0].start_seconds + self.DUPLICATE_OFFSET_SECONDS,
+            at_pitch=chosen[0].pitch,
+            verb="Duplicated",
+        )
+
+    def _insert_notes(
+        self,
+        relative_notes: list[GuiMidiNote],
+        *,
+        at_seconds: float,
+        at_pitch: int,
+        verb: str,
+    ) -> None:
+        """Insert a relative pattern anchored at ``at_seconds`` / ``at_pitch``.
+
+        The pattern transposes so its first note lands on ``at_pitch``, which
+        moves the group while preserving the intervals between its notes.
+
+        One undoable step whatever the count: edit_history snapshots the whole
+        list, exactly as multi-delete relies on.  The inserted notes become the
+        selection so they can be moved or edited straight away.
+        """
+
+        if self.state.heatmap is None or not relative_notes:
+            return
+        current = list(self.state.current_notes)
+        self.edit_history.record(current)
+        anchored = [
+            replace(
+                note,
+                start_seconds=at_seconds + note.start_seconds,
+                # The buffer carries pitch *offsets* from its first note.
+                pitch=note.pitch + at_pitch,
+            )
+            for note in relative_notes
+        ]
+        self.state.tuned_notes, inserted = add_gui_notes(current, anchored)
+        self._set_display_notes(self.state.tuned_notes)
+        self.piano_roll.set_selected_indices(inserted)
+        preview_status = self._refresh_midi_preview(self.state.tuned_notes)
+        plural = "note" if len(anchored) == 1 else "notes"
+        self._set_status(
+            f"{verb} {len(anchored)} {plural} at {at_seconds:.2f}s. "
             f"Export writes {len(self.state.tuned_notes)} edited notes.{preview_status}"
         )
 
