@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QSpinBox,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -60,6 +61,8 @@ class AnalysisControls(QWidget):
     heatmap_toggled = Signal(bool)
     pitch_bends_toggled = Signal(bool)
     audition_toggled = Signal(bool)
+    beat_grid_toggled = Signal(bool)
+    beats_per_bar_changed = Signal(int)
     theme_changed = Signal(str)  # emits the selected theme id
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -89,6 +92,19 @@ class AnalysisControls(QWidget):
         self.show_pitch_bends = QCheckBox("Show pitch bends")
         self.show_pitch_bends.setChecked(True)
         self.show_pitch_bends.setToolTip("Draw each note's pitch-bend contour (slides, vibrato) as a curve. Most visible when zoomed in; only Basic Pitch produces bends.")
+        self.show_beat_grid = QCheckBox("Show detected beats")
+        self.show_beat_grid.setChecked(True)
+        self.show_beat_grid.setToolTip("Draw the detected beat positions as vertical lines. Shows whether the estimated tempo actually lines up with the music.")
+        # Beat tracking finds the pulse, not the metre, so the bar length is a
+        # setting rather than a guess: emphasising every 4th beat in 3/4 would
+        # walk through the bar and mislead. 1 disables the emphasis entirely.
+        self.beats_per_bar = QSpinBox()
+        self.beats_per_bar.setRange(1, 16)
+        self.beats_per_bar.setValue(4)
+        self.beats_per_bar.setPrefix("bar: ")
+        self.beats_per_bar.setSuffix(" beats")
+        self.beats_per_bar.setKeyboardTracking(False)
+        self.beats_per_bar.setToolTip("How many beats make a bar, used to highlight downbeats among the detected beats. Beat tracking detects the pulse but not the time signature, so set this to match the music (4 for 4/4, 3 for 3/4). Set 1 to weight every beat equally.")
         self.audition_on_select = QCheckBox("Audition on select")
         self.audition_on_select.setChecked(True)
         self.audition_on_select.setToolTip("Play a note on its own when you click it, so you can judge the transcription by ear without starting playback.")
@@ -144,6 +160,8 @@ class AnalysisControls(QWidget):
         self.notes_only.toggled.connect(lambda checked: self.heatmap_toggled.emit(not checked))
         self.show_pitch_bends.toggled.connect(self.pitch_bends_toggled.emit)
         self.audition_on_select.toggled.connect(self.audition_toggled.emit)
+        self.show_beat_grid.toggled.connect(self.beat_grid_toggled.emit)
+        self.beats_per_bar.valueChanged.connect(self.beats_per_bar_changed.emit)
         self.theme_combo.currentIndexChanged.connect(
             lambda _index: self.theme_changed.emit(self.theme_combo.currentData())
         )
@@ -295,6 +313,7 @@ class AnalysisControls(QWidget):
         form.addRow(self.show_overlay)
         form.addRow(self.notes_only)
         form.addRow(self.show_pitch_bends)
+        form.addRow(self._beat_grid_row())
         form.addRow(self.audition_on_select)
         return group
 
@@ -353,6 +372,18 @@ class AnalysisControls(QWidget):
     @staticmethod
     def _knob(minimum: int, maximum: int, value: int) -> KnobWidget:
         return KnobWidget(minimum, maximum, value, default=value)
+
+    def _beat_grid_row(self) -> QWidget:
+        """The beats toggle and its bar length, side by side as one setting."""
+
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        layout.addWidget(self.show_beat_grid)
+        layout.addStretch(1)
+        layout.addWidget(self.beats_per_bar)
+        return row
 
     @staticmethod
     def _seconds_spin(value: float) -> QDoubleSpinBox:
