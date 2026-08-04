@@ -139,6 +139,51 @@ def _slice_bend(history, start: float, end: float):
     return points or None
 
 
+def render_note_to_wav(
+    wav_path: Path,
+    *,
+    pitch: int,
+    duration_seconds: float,
+    velocity: int = 90,
+    bend_semitones=None,
+) -> tuple[Path | None, str | None]:
+    """Synthesize a single note to ``wav_path`` for note audition (issue #67).
+
+    Reuses the same voice as the full render, so an auditioned note sounds like
+    what the MIDI preview will play. Returns ``(wav_path, None)`` on success or
+    ``(None, message)`` on failure, matching the other render entry points.
+    """
+
+    try:
+        import numpy as np
+    except Exception as exc:  # pragma: no cover - numpy is a hard GUI dep
+        return None, f"Native note synthesis needs numpy: {exc}"
+
+    # Clamped so a very short note still produces an audible blip and a long one
+    # does not tie up the player.
+    duration = max(0.08, min(2.0, float(duration_seconds)))
+    try:
+        tone = _render_note(
+            _midi_note_to_freq(int(pitch)),
+            duration,
+            max(1, min(127, int(velocity))) / 127.0,
+            bend_semitones=bend_semitones,
+        )
+        peak = float(np.max(np.abs(tone))) if tone.size else 0.0
+        if peak > 0:
+            tone = tone / peak * 0.9
+        pcm16 = (tone * 32767).astype("int16")
+        wav_path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(wav_path), "wb") as out:
+            out.setnchannels(1)
+            out.setsampwidth(2)
+            out.setframerate(SAMPLE_RATE)
+            out.writeframes(pcm16.tobytes())
+    except Exception as exc:
+        return None, f"Native note synthesis could not write {wav_path}: {exc}"
+    return wav_path, None
+
+
 def render_midi_to_wav_native(midi_path: Path, wav_path: Path) -> tuple[Path | None, str | None]:
     """Synthesize ``midi_path`` to ``wav_path`` with the built-in numpy synth.
 
