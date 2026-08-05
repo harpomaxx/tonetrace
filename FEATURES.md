@@ -64,6 +64,7 @@ The PySide6 GUI follows the standalone GUI plan in `docs/standalone-gui-plan/` a
 - heatmap + MIDI rectangle piano-roll widget with Ctrl+wheel horizontal time zoom, Shift+wheel vertical pitch zoom, scrolling, and pixel-aggregated drawing for large/long analyses; the drawing uses a cached numpy activation matrix (with a pure-Python fallback when numpy is absent) to reduce whole columns at once
 - cursor-anchored zoom on both axes: the time under the pointer stays under the pointer on Ctrl+wheel, and the pitch stays put on Shift+wheel; zoom without a cursor (buttons, keyboard) holds the viewport centre
 - Fit and Reset zoom buttons: Fit zooms to the selected notes (both axes), falling back to the dragged analysis range and then the whole song; Reset returns to the whole-song view
+- audio-based tempo from librosa beat tracking, preferred over the note-onset heuristic when the tracked grid is steady; the detected beats are drawn on the roll (every Nth accented, with the bar length a user setting since tracking finds the pulse but not the metre) so the estimate can be checked by eye rather than taken on trust
 - piano roll spans the full-song timeline so the waveform and heatmap playheads share one time-to-pixel scale even during range analysis, while the canvas width stays viewport-bounded for huge files
 - onset-grouped detected sequence table
 - original/rendered-MIDI playback controls via Qt Multimedia
@@ -78,6 +79,10 @@ The PySide6 GUI follows the standalone GUI plan in `docs/standalone-gui-plan/` a
 - add notes by double-clicking empty space in the piano roll
 - copy/paste/duplicate the selection (Ctrl+C / Ctrl+V / Ctrl+D); paste anchors at the mouse pointer, transposing the pattern onto the row under the cursor while preserving its rhythm and intervals, and falls back to the playhead when the pointer is off the grid
 - delete selected notes with Delete/Backspace or the delete button; a multi-selection deletes in one undoable step
+- non-destructive mute (`M`): muted notes stay on the roll (hollow, dashed) and remain selectable and editable, but are excluded from the MIDI preview and from export, so auditioning "which notes to keep" never destroys anything
+- keyboard nudging of the selection: arrows for time and pitch, `+`/`-` for velocity, with Shift finer/larger and Ctrl coarser/octave; each press is one undo step and a group clamps by its most-constrained member
+- note audition: clicking a note plays it on its own through a dedicated player, so a transcription can be judged by ear without starting playback (toggleable)
+- keyboard transport: `Space` pause/resume, `1`/`2`/`3` to switch Original/MIDI/Both mid-playback, `0`/`Esc` to stop; guarded so digits still type into spin boxes
 - sequence table and piano roll update after edits/deletion
 - rendered MIDI WAV preview updates after inspector edits, deletes, CQT retunes, and committed piano-roll drags when TiMidity++ is available
 - "Notes only (hide heatmap)" toggle to view just the extracted MIDI notes without the pitch-salience heatmap
@@ -100,13 +105,13 @@ open MP3/FLAC/OGG, build the pitch overview, and analyze out of the box.
 
 ## Current limitation / next focus
 
-The native GUI can export analyzed/tuned/edited notes, compare original-vs-MIDI playback, and edit a transcription with a full note-editing workflow — add, multi-select, group move/resize, copy/paste, and delete, all with undo/redo — plus re-render the MIDI WAV preview after committed edits when TiMidity++ is available.
+The native GUI can export analyzed/tuned/edited notes, compare original-vs-MIDI playback, and edit a transcription with a full note-editing workflow — add, multi-select, group move/resize, copy/paste, nudge, mute and delete, all with undo/redo and reachable by mouse or keyboard — plus audition single notes and re-render the MIDI WAV preview after committed edits when TiMidity++ is available.
 
 Near-term native GUI focus:
 
 - continue playback/playhead sync edge cases (edited MIDI preview, Qt backend stall/buffering behavior on large files); smooth interpolated sync, full-song timeline mapping, and follow-scroll are implemented
-- keyboard-driven editing: nudging selected notes with the arrow keys, transport shortcuts, and note audition on click
 - link the sequence table and piano-roll selections, and show the analyzed range bounds in the roll
+- quantization, now unblocked by audio-based tempo and beat positions: time quantize (snap note starts to the detected grid, ideally with a strength control rather than all-or-nothing) and scale quantize (snap pitches to the detected key)
 - improve speed/responsiveness for large files: heatmap storage/paint, waveform, and overview paths are numpy-vectorized; per-drag repaint is partial; and audio loading, transcription, and MIDI-preview rendering run in cancellable isolated processes with stage progress and clean shutdown. Optional finer-grained backend progress and LOD caching remain future work (see the [GitHub issues](https://github.com/harpomaxx/tonetrace/issues))
 - continue UI polish for the sampler workflow and selected-region editing
 
