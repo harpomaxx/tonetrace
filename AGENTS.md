@@ -58,6 +58,10 @@ The editing surface grew a lot in issues #35/#36/#37/#63 and #10. The pieces int
 - **Batch edits are one undo step.** `notes_edited = Signal(list, bool)` carries every affected note per move rather than firing the single-note signal N times. `edit_history.record` snapshots the whole list, so batch delete, paste and group drag all undo in one step for free.
 - **Zoom is anchored.** `zoom_to` / `vertical_zoom_to` take an optional anchor and solve for the scroll offset that keeps that point under the cursor; with no anchor they hold the viewport centre so buttons do not jump the view. At the top/left edge, zooming out cannot honour the anchor (it would need a negative scroll offset), so it clamps and the anchored point drifts — that is geometry, not a bug.
 - **The copy buffer is a pattern, not a position.** Copied notes are stored relative to their earliest note in *both* time and pitch, plus the root pitch they came from, so a paste re-anchors anywhere and transposes onto the row under the pointer while keeping intervals.
+- **Editing keys route through the roll, not the window.** The roll sits in a `QScrollArea`, which defaults to `StrongFocus` and eats the arrow keys to scroll; before the roll took focus and offered keys to `MainWindow.handle_piano_roll_key`, nudging silently did nothing. Anything the window does not claim still falls through to the scroll area, so arrows keep scrolling when no notes are selected. Transport keys (Space, digits) are separately guarded against firing while a spin box or combo has focus, or typing a velocity would start playback.
+- **Mute is a note field, filtered centrally.** `GuiMidiNote.muted` keeps a note in the project and on the roll while excluding it from sound: `gui_notes_to_midi` drops muted notes itself, so every export path honours it without each caller remembering, and `_notes_for_midi_preview` strips them before either timeline branch runs. A mixed selection mutes wholesale rather than flipping each note.
+- **Audition is guarded on `drag_has_moved`, not `drag_mode`.** `mousePressEvent` arms `drag_mode` *before* emitting `note_selected`, so guarding on `drag_mode` suppresses every click and audition never fires. It is wired to `note_selected` (a real click) rather than `selection_changed`, which also fires for nudges, pastes and rubber-band sweeps and would retrigger audio continuously.
+- **Beat times are advisory display data.** The roll draws `beat_times` from the analysis result; `beats_per_bar` is a user setting because tracking finds the pulse but not the metre. `_beat_grid_is_visible()` is shared by the beat drawing and the seconds-grid dimming so the two cannot disagree, and the grid thins to downbeats (then hides) when beats fall closer than `MIN_BEAT_SPACING_PIXELS`.
 
 Tuning flags available on `analyze`:
 
@@ -98,16 +102,18 @@ Run tests:
 NOTEGRABBER_BIN=notegrabber python3 -m pytest -q
 ```
 
-Current expected result: **394 passed** when optional ML and PySide6 GUI dependencies are installed. (Stem-separation tests mock `demucs_onnx`, so they run without downloading the model.)
+Current expected result: **520 passed** when optional ML and PySide6 GUI dependencies are installed. (Stem-separation tests mock `demucs_onnx`, so they run without downloading the model.)
 
 Quick GUI manual check:
 
 ```bash
 notegrabber-gui oxi.wav
-# Click Analyze, then test: Play both; single-note select/drag/resize/delete; shift-click and
-# rubber-band multi-select; group drag of a multi-selection (including to the very top/left, where
-# it must clamp without losing spacing); double-click empty space to add a note; Ctrl+C/V/D copy,
-# paste-at-pointer and duplicate; Ctrl+wheel and Shift+wheel zoom; Fit/Reset; inspector edits;
+# Click Analyze, then test: Space/1/2/3 transport; single-note select/drag/resize/delete;
+# shift-click and rubber-band multi-select; group drag of a multi-selection (including to the very
+# top/left, where it must clamp without losing spacing); double-click empty space to add a note;
+# arrow/+- nudging; M to mute (muted notes stay visible but drop out of preview and export);
+# clicking a note auditions it; Ctrl+C/V/D copy, paste-at-pointer and duplicate; Ctrl+wheel and
+# Shift+wheel zoom; Fit/Reset; the detected-beat overlay and its bar length; inspector edits;
 # undo/redo after each; and Export MIDI.
 ```
 
@@ -120,6 +126,12 @@ Where the piano-roll editing behaviour is pinned, if you change that surface:
 | `test_group_move_resize.py` | group drag/resize, group clamping, one-step undo (#36) |
 | `test_copy_paste_notes.py` | copy/paste/duplicate, transposition, the relative buffer (#63) |
 | `test_cursor_centered_zoom.py` | cursor-anchored zoom on both axes (#10) |
+| `test_keyboard_nudge.py` | arrow/velocity nudging and key routing through the roll (#65) |
+| `test_note_mute.py` | non-destructive mute and its export/preview exclusion (#66) |
+| `test_note_audition.py` | single-note audition and its drag guard (#67) |
+| `test_transport_shortcuts.py` | Space/1/2/3/0/Esc and the text-entry focus guard (#64) |
+| `test_beat_tempo.py` | librosa tempo/beat estimation and the confidence policy (#14) |
+| `test_beat_grid_overlay.py` | the beat overlay, beats-per-bar, and low-zoom density (#14) |
 | `test_fit_reset_zoom.py` | Fit/Reset and the fallback chain (#10) |
 | `test_piano_roll_hit_index.py` | per-row hit-testing index (#29) |
 | `test_progress_layout_stable.py` | the progress strip not shifting the roll |
@@ -145,7 +157,7 @@ These are working artifacts, not core source code.
 
 ## Development notes
 
-- GitHub repo: `harpomaxx/tonetrace`; default branch is `main`. The backlog lives in [GitHub Issues](https://github.com/harpomaxx/tonetrace/issues) (the old in-repo `issues/` folder was removed). Issues #1–#8, #10, #13, #19, #27, #35, #36, #37, and #63 are implemented: vectorized paint paths, key/stats, cancellable process jobs with clean shutdown, compact heatmap storage, and the piano-roll editing suite (note creation, multi-select with rubber band, group move/resize, copy/paste/duplicate, cursor-anchored zoom with Fit/Reset). A batch of newer UI issues (#64–#79) is open and largely builds on that editing surface — #65 (keyboard nudging), #77 (sequence-table selection sync) and #75 (zoom toolbar, which overlaps the Fit/Reset controls now in the action bar) are the closest neighbours.
+- GitHub repo: `harpomaxx/tonetrace`; default branch is `main`. The backlog lives in [GitHub Issues](https://github.com/harpomaxx/tonetrace/issues) (the old in-repo `issues/` folder was removed). Issues #1–#8, #10, #13, #14, #19, #27, #35, #36, #37, #63, #64, #65, #66 and #67 are implemented: vectorized paint paths, key/stats, cancellable process jobs with clean shutdown, compact heatmap storage, librosa beat tracking with a beat overlay, and the piano-roll editing suite (note creation, multi-select with rubber band, group move/resize, copy/paste/duplicate, keyboard nudging, note audition, non-destructive mute, transport shortcuts, cursor-anchored zoom with Fit/Reset). Still open from the #68–#79 batch: #77 (sequence-table selection sync) and #74 (waveform minimap) are the closest neighbours; #75 (zoom toolbar) overlaps the Fit/Reset controls now in the action bar and probably wants rescoping rather than implementing.
 - Packaging: `python3 -m build` produces a wheel + sdist in `dist/` that install and run outside the source tree (`pip install 'dist/*.whl[gui]'`, then `notegrabber-gui` from anywhere). The GUI icon SVGs under `gui/resources/` are bundled via `[tool.hatch.build.targets.wheel] artifacts` and loaded at runtime with `Path(__file__)`, so keep that relative layout intact. `dist/`/`build/` are gitignored.
 - Keep the existing CLI contract stable unless tests/docs are updated together.
 - Prefer adding tests before changing analysis behavior.
@@ -162,7 +174,7 @@ User priorities for the next work are **UI polish, speed/responsiveness, playbac
 2. **Zoom/navigation polish**: note edits/clicks no longer compound the heatmap zoom by recalculating fit from the already-zoomed canvas. Pitch-row vertical zoom is implemented with Shift+wheel, and time zoom remains Ctrl+wheel; the left transcription box no longer contains zoom sliders. Cursor-anchored zoom is implemented on both axes: Ctrl+wheel holds the time under the cursor and Shift+wheel holds the pitch, by solving for the scroll offset that puts the anchored point back under the cursor at the new scale. Zoom with no cursor (buttons, keyboard) holds the viewport centre. Note the inherent limit at the top/left edge — honouring the anchor while zooming out there would need a negative scroll offset, so it clamps at 0 and the anchored point drifts for those last clicks. Fit/Reset buttons are in the action bar: Fit zooms to the selected notes (both axes), falling back to the analysis range then the whole song. The horizontal zoom cap was raised 32x → 256x for Fit, since fitting a couple of seconds inside a multi-minute song needs far more than 32x; the canvas stays viewport-bounded at any zoom. **This issue is complete** — further zoom work is #75.
 3. **Speed/responsiveness**: playhead updates repaint only narrow regions; the heatmap paint uses compact/vectorized numpy storage (issues #1/#27); per-drag note repaint is partial (issue #3); waveform/overview paths are vectorized (issues #5/#6); and audio-load, analysis, and MIDI-preview work now runs in cancellable isolated processes with stage progress and safe shutdown (issues #13/#19). Remaining: optional finer-grained backend progress and overview/heatmap level-of-detail caching.
 4. **UI polish**: heatmap view height is now capped relative to the window so vertical pitch zoom does not hide the inspector/sequence area, and the left-panel action buttons are placed above reserved/stub controls so Open/Analyze/Delete/Export remain visible. Continue refining the ToneTrace dark pro-DAW layout, especially control density, selected-region affordances, selected-note editing affordances, and visual hierarchy between overview waveform, detail heatmap, and sequence table.
-5. **Editing workflow polish**: the mouse-driven surface is largely built — create (#37), multi-select with rubber band (#35), group move/resize (#36), copy/paste/duplicate (#63), multi-delete — all as single undo steps. What is missing is the keyboard: nudging selected notes with the arrows (#65), transport shortcuts (#64), note audition on click (#67), and non-destructive mute (#66). Optional ghost previews during drag remain unbuilt. Read the "Piano-roll editing model" section before extending any of this; the gestures on empty space are already arbitrated between seek, rubber band and note creation, so a new one needs to fit that scheme rather than claim a fourth meaning.
+5. **Editing workflow polish**: essentially built. Mouse — create (#37), multi-select with rubber band (#35), group move/resize (#36), copy/paste/duplicate (#63), multi-delete, audition on click (#67). Keyboard — nudging (#65), transport shortcuts (#64), non-destructive mute (#66). All edits are single undo steps. Optional ghost previews during drag remain unbuilt, as does sequence-table selection sync (#77). Read the "Piano-roll editing model" section before extending any of this; the gestures on empty space are already arbitrated between seek, rubber band and note creation, so a new one needs to fit that scheme rather than claim a fourth meaning, and the keys are similarly crowded.
 6. **Output/workflow polish**: add native CSV/minimap parity where useful and project/session save-load.
 7. **Analysis comparison and quality**: add explicit compare mode for CQT vs Basic Pitch outputs and tolerant regression fixtures/metrics for real samples if legally/shareably possible.
 8. Later, move toward plugin implementation using JUCE/DPF/iPlug2/NIH-plug.
