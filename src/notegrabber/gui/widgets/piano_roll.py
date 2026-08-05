@@ -68,6 +68,15 @@ class PianoRollWidget(QWidget):
         self.show_notes = True
         self.show_heatmap = True
         self.show_pitch_bends = True
+        # Detected beat positions in full-song seconds (issue #14). Drawn as a
+        # faint grid so the tracked tempo is visible against the music rather
+        # than being a number to take on trust.
+        self.beat_times: tuple[float, ...] = ()
+        self.show_beat_grid = True
+        # Beats per bar for downbeat emphasis. Beat tracking finds the pulse but
+        # not the metre, so this is a user setting: emphasising every 4th beat in
+        # 3/4 would walk through the bar rather than mark it. 1 means no emphasis.
+        self.beats_per_bar = 4
         self.selected_indices: set[int] = set()
         # Rubber-band drag over empty space (issue #35). Both are canvas points;
         # None means no band is in progress.
@@ -236,6 +245,22 @@ class PianoRollWidget(QWidget):
 
     def set_show_heatmap(self, enabled: bool) -> None:
         self.show_heatmap = enabled
+        self.update()
+
+    def set_beat_times(self, beat_times) -> None:
+        """Set the detected beat positions to draw (full-song seconds)."""
+
+        self.beat_times = tuple(float(time) for time in (beat_times or ()))
+        self.update()
+
+    def set_show_beat_grid(self, enabled: bool) -> None:
+        self.show_beat_grid = enabled
+        self.update()
+
+    def set_beats_per_bar(self, beats: int) -> None:
+        """Set how many beats make a bar for downbeat emphasis (1 = none)."""
+
+        self.beats_per_bar = max(1, int(beats))
         self.update()
 
     def set_show_pitch_bends(self, enabled: bool) -> None:
@@ -734,6 +759,9 @@ class PianoRollWidget(QWidget):
         if self.show_heatmap:
             self._draw_heatmap(painter)
         self._draw_grid(painter)
+        # Beats sit above the time grid but below the notes, so note rectangles
+        # stay readable over them.
+        self._draw_beat_grid(painter)
         if self.show_notes:
             self._draw_notes(painter)
             if self.show_pitch_bends:
@@ -1135,7 +1163,17 @@ class PianoRollWidget(QWidget):
             if pitch % 12 == 0:
                 y = note_index * self.note_height
                 painter.drawLine(self.keyboard_width, y, self.width(), y)
-        painter.setPen(QPen(grid, 1))
+        # Second marks recede when beats are drawn: both are verticals from the
+        # same theme colour, so at equal weight they read as one confusing grid
+        # of two different meanings. Beats are the musical structure and own the
+        # foreground; seconds stay as a faint dashed absolute-time reference.
+        seconds_color = QColor(grid)
+        if self._beat_grid_is_visible():
+            seconds_color.setAlpha(max(1, int(grid.alpha() * 0.45)))
+            seconds_pen = QPen(seconds_color, 1, Qt.PenStyle.DashLine)
+        else:
+            seconds_pen = QPen(seconds_color, 1)
+        painter.setPen(seconds_pen)
         duration = self._timeline_duration_seconds()
         interval = self._grid_interval_seconds()
         # Only draw grid lines within the visible clip so a full-song timeline
@@ -1151,6 +1189,84 @@ class PianoRollWidget(QWidget):
                 break
             painter.drawLine(x, 0, x, self.height())
             second += interval
+
+    # Below this spacing, adjacent beat lines stop reading as separate lines.
+    MIN_BEAT_SPACING_PIXELS = 18.0
+
+    def _beat_grid_is_visible(self) -> bool:
+        """Whether any beat line will actually be drawn at the current zoom.
+
+        The seconds grid dims only when beats are really on screen, so zooming
+        out past the beat grid restores the plain timeline rather than leaving a
+        faint dashed one with nothing to defer to.
+        """
+
+        if not self.show_beat_grid or not self.beat_times or self.heatmap is None:
+            return False
+        spacing = self._beat_spacing_pixels()
+        if spacing is None or spacing >= self.MIN_BEAT_SPACING_PIXELS:
+            return True
+        # Too dense for every beat: downbeats alone may still be legible.
+        return self.beats_per_bar > 1 and spacing * self.beats_per_bar >= self.MIN_BEAT_SPACING_PIXELS
+
+    def _beat_spacing_pixels(self) -> float | None:
+        """Median on-screen gap between consecutive beats, or None if unknown."""
+
+        if len(self.beat_times) < 2 or self.seconds_per_pixel <= 0:
+            return None
+        gaps = [b - a for a, b in zip(self.beat_times, self.beat_times[1:]) if b > a]
+        if not gaps:
+            return None
+        median_gap = sorted(gaps)[len(gaps) // 2]
+        return median_gap / self.seconds_per_pixel
+
+    def _draw_beat_grid(self, painter: QPainter) -> None:
+        """Draw detected beat positions as faint verticals (issue #14).
+
+        Beats come from librosa beat tracking and are irregular timestamps, not
+        a fixed interval, so this cannot reuse ``_draw_grid``'s stepping loop.
+        Seeing the beats makes the tempo estimate checkable by eye: a grid that
+        drifts against the music is a tempo that is subtly wrong.
+
+        Every ``beats_per_bar``-th beat is drawn in the accent colour as a
+        downbeat.  That count is a user setting because the tracker finds the
+        pulse but not the metre -- assuming 4/4 on a waltz would highlight beats
+        1, 5, 9 and walk through the bar instead of marking it.
+        """
+
+        # Zoomed out, beats can fall a few pixels apart and read as a dense
+        # hatch rather than a grid -- 12px at fit-to-song on a one-minute track.
+        # Below a legible spacing, draw only downbeats; below even that, draw
+        # nothing and leave the seconds grid to carry the timeline.
+        if not self._beat_grid_is_visible():
+            return
+        spacing = self._beat_spacing_pixels()
+        downbeats_only = spacing is not None and spacing < self.MIN_BEAT_SPACING_PIXELS
+        theme = active_theme()
+        beat_color = qcolor(theme.grid)
+        beat_color.setAlpha(min(255, int(beat_color.alpha() * 1.6) + 20))
+        downbeat_color = qcolor(theme.accent)
+        downbeat_color.setAlpha(110)
+
+        # Only paint what is on screen: a long file can hold thousands of beats.
+        clip = painter.clipBoundingRect()
+        visible_left = clip.left() if not clip.isEmpty() else float(self.keyboard_width)
+        visible_right = clip.right() if not clip.isEmpty() else float(self.width())
+        height = self.height()
+        for index, seconds in enumerate(self.beat_times):
+            x = self.x_for_seconds(seconds)
+            if x < visible_left - 1:
+                continue
+            if x > visible_right + 1:
+                break
+            if x < self.keyboard_width:
+                continue
+            # beats_per_bar of 1 means "no metre known": every beat drawn alike.
+            is_downbeat = self.beats_per_bar > 1 and index % self.beats_per_bar == 0
+            if downbeats_only and not is_downbeat:
+                continue
+            painter.setPen(QPen(downbeat_color if is_downbeat else beat_color, 1))
+            painter.drawLine(x, 0, x, height)
 
     def _grid_interval_seconds(self) -> int:
         """Return a coarse-enough grid interval for long recordings."""

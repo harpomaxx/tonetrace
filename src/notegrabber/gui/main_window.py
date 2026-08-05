@@ -453,6 +453,8 @@ class MainWindow(QMainWindow):
         self.controls.heatmap_toggled.connect(self.piano_roll.set_show_heatmap)
         self.controls.pitch_bends_toggled.connect(self.piano_roll.set_show_pitch_bends)
         self.controls.audition_toggled.connect(self.set_audition_enabled)
+        self.controls.beat_grid_toggled.connect(self.piano_roll.set_show_beat_grid)
+        self.controls.beats_per_bar_changed.connect(self.piano_roll.set_beats_per_bar)
         self.controls.theme_changed.connect(self._on_theme_changed)
         self.transport.play_both_requested.connect(self._play_both)
         self.transport.play_original_requested.connect(self._play_original)
@@ -661,6 +663,7 @@ class MainWindow(QMainWindow):
         # replaced on every analysis so a stale tempo never outlives its audio.
         self._audio_tempo_bpm = result.audio_tempo_bpm
         self._beat_times = result.beat_times
+        self.piano_roll.set_beat_times(result.beat_times)
         self._select_note(None)
         self._set_display_notes(result.notes)
         if result.rendered_midi_wav is not None:
