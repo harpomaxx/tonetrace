@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import math
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -55,7 +56,78 @@ def read_audio_duration(path: Path) -> float | None:
 
         return float(sf.info(str(path)).duration)
     except Exception:
+        pass
+
+    # libsndfile cannot open every format notegrabber accepts (M4A/AAC). Fall
+    # back to librosa, which reads the duration from container metadata where it
+    # can and only decodes as a last resort.
+    try:
+        import librosa  # type: ignore[import-not-found]
+
+        return float(librosa.get_duration(path=str(path)))
+    except Exception:
         return None
+
+
+def soundfile_can_decode(path: Path) -> bool:
+    """Whether ``soundfile`` (libsndfile) can decode this file directly.
+
+    demucs-onnx reads its input with ``soundfile``, which has no AAC/M4A decoder,
+    so formats it cannot open have to be transcoded to WAV first.
+    """
+
+    try:
+        import soundfile as sf  # type: ignore[import-not-found]
+
+        sf.info(str(path))
+        return True
+    except Exception:
+        return False
+
+
+@contextlib.contextmanager
+def decoded_to_wav(path: Path):
+    """Yield a path to ``path`` in a form ``soundfile`` can read.
+
+    Files libsndfile already handles are yielded unchanged (no copy, no
+    re-encode). Anything else -- notably M4A/AAC, which ``notegrabber analyze``
+    accepts via librosa but libsndfile cannot open -- is decoded to a temporary
+    WAV that is removed on exit. Decoding keeps the native sample rate and
+    channel layout so separation quality is unaffected; the model resamples
+    internally anyway.
+    """
+
+    if soundfile_can_decode(path):
+        yield path
+        return
+
+    try:
+        import librosa  # type: ignore[import-not-found]
+        import soundfile as sf  # type: ignore[import-not-found]
+    except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional environment
+        raise RuntimeError(
+            f"cannot decode {path.name}: libsndfile does not support this format and "
+            "librosa is unavailable to convert it. Install the audio extras, or convert "
+            "the file to WAV first."
+        ) from exc
+
+    try:
+        audio, sample_rate = librosa.load(str(path), sr=None, mono=False)
+    except Exception as exc:
+        raise RuntimeError(
+            f"cannot decode {path.name}: {exc}. Converting it to WAV first "
+            "(for example with ffmpeg) will work."
+        ) from exc
+
+    # librosa returns (channels, frames) for stereo and (frames,) for mono;
+    # soundfile writes (frames, channels).
+    data = audio.T if audio.ndim > 1 else audio
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        wav_path = Path(tmp_dir) / f"{path.stem}.wav"
+        sf.write(str(wav_path), data, int(sample_rate), subtype="PCM_16")
+        del data, audio
+        yield wav_path
 
 
 def estimate_separation_seconds(duration_seconds: float | None) -> float | None:
@@ -130,8 +202,6 @@ def _separate_in_segments(
     more than one segment of audio (input + stems) in memory, so total memory is
     independent of the song length.
     """
-
-    import tempfile
 
     import soundfile as sf  # type: ignore[import-not-found]
 
@@ -229,26 +299,37 @@ def separate_stems(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     wanted_names = list(stems) if stems is not None else list(produced)
-    duration = read_audio_duration(input_audio)
-    use_segments = (
-        segment_seconds is not None
-        and duration is not None
-        and duration > segment_seconds
-    )
 
-    if use_segments:
-        _separate_in_segments(
-            input_audio,
-            output_dir,
-            wanted_names,
-            model=model,
-            stems=stems,
-            precision=precision,
-            verbose=verbose,
-            segment_seconds=segment_seconds,
+    # Decode formats libsndfile cannot open (M4A/AAC and friends) to a temporary
+    # WAV first. This also has to wrap the duration probe: an undecodable file
+    # reports no duration, which would silently skip segmenting and put a
+    # full-length song back in RAM in one piece.
+    if verbose and not soundfile_can_decode(input_audio):
+        print(f"  decoding {input_audio.name} to WAV…", file=sys.stderr, flush=True)
+
+    with decoded_to_wav(input_audio) as decoded_audio:
+        duration = read_audio_duration(decoded_audio)
+        use_segments = (
+            segment_seconds is not None
+            and duration is not None
+            and duration > segment_seconds
         )
-    else:
-        _run_demucs(input_audio, output_dir, model=model, stems=stems, precision=precision, verbose=verbose)
+
+        if use_segments:
+            _separate_in_segments(
+                decoded_audio,
+                output_dir,
+                wanted_names,
+                model=model,
+                stems=stems,
+                precision=precision,
+                verbose=verbose,
+                segment_seconds=segment_seconds,
+            )
+        else:
+            _run_demucs(
+                decoded_audio, output_dir, model=model, stems=stems, precision=precision, verbose=verbose
+            )
 
     wanted = tuple(stems) if stems is not None else produced
     stem_paths = {name: output_dir / f"{name}.wav" for name in wanted}
