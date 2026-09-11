@@ -3,10 +3,76 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
 from notegrabber.gui.app import build_parser
+
+
+@pytest.mark.gui
+def test_export_defaults_next_to_source_with_a_descriptive_name_offscreen(
+    tmp_path, monkeypatch
+) -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication, QFileDialog
+    from notegrabber.gui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+    window._settings.remove("export/last_directory")
+    window.state.audio_path = tmp_path / "lead guitar.wav"
+    window.state.heatmap = object()  # type: ignore[assignment]
+    starts: list[str] = []
+
+    def capture_start(_parent, _title, start, _filters):
+        starts.append(start)
+        return "", ""
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", capture_start)
+
+    window._export_midi_dialog()
+
+    assert window._default_export_path() == tmp_path / "lead guitar.tonetrace.mid"
+    assert starts == [str(tmp_path / "lead guitar.tonetrace.mid")]
+
+    window.state.heatmap = None
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.gui
+def test_export_remembers_the_chosen_directory_offscreen(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication, QFileDialog
+    from notegrabber.gui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(render_midi=False)
+    window._settings.remove("export/last_directory")
+    window.state.audio_path = tmp_path / "source.wav"
+    window.state.heatmap = object()  # type: ignore[assignment]
+    chosen = tmp_path / "exports" / "take.mid"
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *_args: (str(chosen), "MIDI files (*.mid *.midi)"),
+    )
+    monkeypatch.setattr(window, "_run_export", lambda *_args: None)
+
+    window._export_midi_dialog()
+
+    assert Path(str(window._settings.value("export/last_directory"))) == chosen.parent
+    window.state.audio_path = tmp_path / "next.wav"
+    assert window._default_export_path() == chosen.parent / "next.tonetrace.mid"
+
+    window.state.heatmap = None
+    window.close()
+    app.processEvents()
 
 
 def test_gui_launcher_parser_documents_backend_without_qt() -> None:
