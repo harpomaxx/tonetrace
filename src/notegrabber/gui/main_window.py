@@ -2232,11 +2232,26 @@ class MainWindow(QMainWindow):
                 "All files (*)",
             )
         )
-        path, selected_filter = QFileDialog.getSaveFileName(self, "Export", "analysis.mid", filters)
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Export", str(self._default_export_path()), filters
+        )
         if not path:
             return
         output = self._resolve_export_path(Path(path), selected_filter)
+        self._settings.setValue("export/last_directory", str(output.parent))
         self._run_export(gui_notes_to_midi(notes), output, len(notes))
+
+    def _default_export_path(self) -> Path:
+        source = self.state.audio_path
+        filename = f"{source.stem}.tonetrace.mid" if source is not None else "analysis.mid"
+        saved_directory = self._settings.value("export/last_directory", "")
+        if saved_directory:
+            directory = Path(str(saved_directory)).expanduser()
+        elif source is not None:
+            directory = source.parent
+        else:
+            directory = Path.home()
+        return directory / filename
 
     @staticmethod
     def _resolve_export_path(output: Path, selected_filter: str) -> Path:

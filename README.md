@@ -161,6 +161,8 @@ section (handy for long files), pick a backend, and click **Analyze**. Then:
   (WAV / MP3 / FLAC / OGG). Audio is synthesized with the built-in synth and
   encoded via `soundfile`; MP3/FLAC/OGG need a libsndfile build with that codec
   (libsndfile ≥ 1.1 for MP3), otherwise the export reports which format failed.
+  The save dialog starts with `<source>.tonetrace.mid` beside the source audio
+  and remembers the last export directory after the first save.
 - **Switch themes** from **Appearance → Theme** in the left panel. The default
   *Midnight* look ships alongside *Amber Rack* (a warm dark synth-rack skin) and
   *ReBirth RB-338* (silver brushed-metal chrome with the TB-303's maroon red and
